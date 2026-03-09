@@ -565,6 +565,22 @@ class BaseFederatedServer:
         return False
 
     def __convert_to_framework_compatible(self, parameters: Any):
+        # Dict-of-tensor values (state-dict parameter groups): convert each
+        # value inside the dicts to the target framework, return as list of dicts.
+        if isinstance(parameters, list) and len(parameters) > 0 and isinstance(parameters[0], dict):
+            if self.training_framework == "torch":
+                return [
+                    {k: torch.as_tensor(v).to(self.device) if not isinstance(v, torch.Tensor) else v.to(self.device)
+                     for k, v in d.items()}
+                    for d in parameters
+                ]
+            elif self.training_framework == "numpy":
+                return [
+                    {k: np.asarray(v) for k, v in d.items()}
+                    for d in parameters
+                ]
+            return parameters
+
         if self.training_framework == "torch":
             if isinstance(parameters, list):
                 converted = [torch.as_tensor(p).to(self.device) if not isinstance(p, torch.Tensor) else p.to(self.device) for p in parameters]

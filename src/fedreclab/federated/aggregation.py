@@ -31,13 +31,29 @@ class FedAvg(BaseAggregation):
     """
     Federated averaging (versatile for FedMF, FedNCF, FedPerGNN, etc.).
 
-    Use aggregate(round_info, global_model, updates) for aggregation.
+    Supports both single-tensor and dict-of-tensor (state-dict) parameter values.
+    For dict values, each key's tensors are averaged independently.
     """
 
     def _average_dense_parameters(self, updates: List[np.ndarray], weights: np.ndarray):
         stacked = np.stack(updates, axis=0)
         w = weights.reshape(-1, *([1] * (stacked.ndim - 1)))
         return np.sum(stacked * w, axis=0)
+
+    def _aggregate_with_weights(self, updates, weights: np.ndarray):
+        """Average updates using pre-computed weights. Handles both tensor and dict-of-tensor."""
+        if isinstance(updates, list) and len(updates) > 0 and isinstance(updates[0], dict):
+            result = {}
+            for key in updates[0]:
+                key_updates = [u[key] for u in updates]
+                if isinstance(key_updates[0], torch.Tensor):
+                    key_updates = [u.detach().cpu().numpy() for u in key_updates]
+                result[key] = self._average_dense_parameters(key_updates, weights)
+            return result
+
+        if isinstance(updates[0], torch.Tensor):
+            updates = [u.detach().cpu().numpy() for u in updates]
+        return self._average_dense_parameters(updates, weights)
 
     def aggregate(
         self,
@@ -46,12 +62,6 @@ class FedAvg(BaseAggregation):
         updates: List[torch.Tensor] | List[np.ndarray],
         param_io: ParamIO,
     ):
-        """
-        Weighted average of client updates.
-        previous_parameters: one dict per client (same keys, same shapes).
-        updates: one dict per client (same keys, same shapes).
-        param_io: ParamIO object.
-        """
         selected_clients = round_info.selected
         num_selected_clients = len(selected_clients)
         weights = np.array(
@@ -65,10 +75,7 @@ class FedAvg(BaseAggregation):
             raise ValueError("weights must sum to a positive value")
         weights = weights / w_sum
 
-        if isinstance(updates[0], torch.Tensor):
-            updates = [u.detach().cpu().numpy() for u in updates]
-
-        return self._average_dense_parameters(updates, weights)
+        return self._aggregate_with_weights(updates, weights)
 
 
 class SimpleAvg(FedAvg):
@@ -82,10 +89,8 @@ class SimpleAvg(FedAvg):
         updates: List[torch.Tensor] | List[np.ndarray],
         param_io: ParamIO,
     ):
-        weights = np.ones((len(updates)), dtype=np.float64)
-        if isinstance(updates[0], torch.Tensor):
-            updates = [u.detach().cpu().numpy() for u in updates]
-        return self._average_dense_parameters(updates, weights)
+        weights = np.ones(len(updates), dtype=np.float64)
+        return self._aggregate_with_weights(updates, weights)
 
 
 class FedMedian(BaseAggregation):
