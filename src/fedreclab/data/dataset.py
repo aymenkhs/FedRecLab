@@ -26,6 +26,7 @@ class InteractionDataset:
         self._time_col = time_col
 
         self.interaction_data = interaction_data
+        self._remap_ids()
 
         self.num_users = len(self.interaction_data[self._user_col].unique())
         self.num_items = len(self.interaction_data[self._item_col].unique())
@@ -108,6 +109,29 @@ class InteractionDataset:
         if self.include_test:
             self.test_idx = test_idx
             self.interaction_data.loc[self.test_idx, 'split'] = 'test'
+
+    @property
+    def num_clients(self):
+        if not hasattr(self, 'client_partition'):
+            raise ValueError("Client partition not set. Call partition_clients() first.")
+        return self.client_partition.num_clients
+
+    def _remap_ids(self):
+        """Remap user and item IDs to contiguous 0-indexed integers for embedding lookups.
+
+        All downstream code (splitting, partitioning, training, evaluation) sees
+        remapped IDs. Original IDs can be recovered via reverse_user_id_map / reverse_item_id_map.
+        """
+        unique_users = sorted(self.interaction_data[self._user_col].unique())
+        unique_items = sorted(self.interaction_data[self._item_col].unique())
+
+        self.user_id_map = {orig: idx for idx, orig in enumerate(unique_users)}
+        self.item_id_map = {orig: idx for idx, orig in enumerate(unique_items)}
+        self.reverse_user_id_map = {idx: orig for orig, idx in self.user_id_map.items()}
+        self.reverse_item_id_map = {idx: orig for orig, idx in self.item_id_map.items()}
+
+        self.interaction_data[self._user_col] = self.interaction_data[self._user_col].map(self.user_id_map)
+        self.interaction_data[self._item_col] = self.interaction_data[self._item_col].map(self.item_id_map)
 
     def partition_clients(self):
         self.client_partition = self.client_partitioning_strategy.partition(self.train_interactions)
