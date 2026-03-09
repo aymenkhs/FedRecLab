@@ -39,11 +39,11 @@ class CrossDeviceSplittingStrategy(BaseClientPartitionStrategy):
         super().__init__(num_clients=0, user_col=user_col, metadata=metadata)
 
     def partition(self, train_interactions: pd.DataFrame) -> ClientPartition:
-        if "user_id" not in train_interactions.columns:
-            raise ValueError("train_interactions must contain a 'user_id' column with user identifiers")
+        if self.user_col not in train_interactions.columns:
+            raise ValueError(f"train_interactions must contain a '{self.user_col}' column with user identifiers")
 
         # Unique users define clients (one client per user)
-        unique_users = train_interactions["user_id"].unique()
+        unique_users = train_interactions[self.user_col].unique()
         num_clients = len(unique_users)
 
         # Map user ids to client ids (0-indexed)
@@ -57,7 +57,7 @@ class CrossDeviceSplittingStrategy(BaseClientPartitionStrategy):
         }
 
         # Group interactions by user to build index lists per client
-        grouped = train_interactions.groupby("u").groups
+        grouped = train_interactions.groupby(self.user_col).groups
         client_to_train_indices: Dict[int, List[int]] = {}
         client_train_sizes: Dict[int, int] = {}
 
