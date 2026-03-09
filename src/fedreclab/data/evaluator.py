@@ -118,7 +118,7 @@ class FullRankingEvaluator(Evaluator):
     ):
         super().__init__(metrics, topk, interaction_dataset, client_algorithm, compute_confidence_intervals, confidence_interval_alpha, logging_callback, eval_mode, verbose)
         
-        self.full_item_list = self.interaction_dataset.interaction_data['item_id'].unique().to_numpy()
+        self.full_item_list = self.interaction_dataset.interaction_data['item_id'].unique()
         self.user_candidate_items = {
             user_id: np.setdiff1d(
                 self.full_item_list,
@@ -127,7 +127,7 @@ class FullRankingEvaluator(Evaluator):
                     include_train=True,
                     include_validation=False,
                     include_test=False,
-                )['item_id'].unique().to_numpy(),
+                )['item_id'].unique(),
             ) for user_id in self.interaction_dataset.interaction_data['user_id'].unique()
         }
         self.threshold_rating = threshold_rating
@@ -175,7 +175,7 @@ class FullRankingEvaluator(Evaluator):
                     eval_interactions_user = eval_interactions_user[eval_interactions_user['rating'] >= self.threshold_rating]                
                 if len(eval_interactions_user) == 0:
                     continue
-                eval_items = eval_interactions_user['item_id'].unique().to_numpy()
+                eval_items = eval_interactions_user['item_id'].unique()
 
                 candidate_items = candidate_items_per_user[user_id]
                 user_scores = scores[user_id]
