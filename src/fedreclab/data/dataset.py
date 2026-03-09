@@ -88,13 +88,15 @@ class InteractionDataset:
         if not include_train and not include_validation and not include_test:
             raise ValueError("At least one of include_train, include_validation, or include_test must be True")
 
+        client_users = self.client_partition.client_ids_2_user_ids[client_id]
+
         parts = []
         if include_train:
-            parts.append(self.train_interactions.iloc[self.client_partition.client_to_train_indices[client_id]])
+            parts.append(self.train_interactions.loc[self.client_partition.client_to_train_indices[client_id]])
         if include_validation:
-            parts.append(self.val_interactions.iloc[self.client_partition.client_to_val_indices[client_id]])
+            parts.append(self.val_interactions[self.val_interactions[self._user_col].isin(client_users)])
         if include_test:
-            parts.append(self.test_interactions.iloc[self.client_partition.client_to_test_indices[client_id]])
+            parts.append(self.test_interactions[self.test_interactions[self._user_col].isin(client_users)])
 
         if len(parts) == 1:
             return parts[0]
