@@ -27,8 +27,8 @@ class InteractionDataset:
 
         self.interaction_data = interaction_data
 
-        self.num_users = len(interaction_data[self._user_col].unique())
-        self.num_items = len(interaction_data[self._item_col].unique())
+        self.num_users = len(self.interaction_data[self._user_col].unique())
+        self.num_items = len(self.interaction_data[self._item_col].unique())
         self.num_interactions = len(interaction_data)
 
         self.splitting_strategy = splitting_strategy
@@ -71,7 +71,7 @@ class InteractionDataset:
         if self.test_idx is None:
             raise ValueError("Test index is not set, call the method split_dataset to split the dataset")
         return self.interaction_data.iloc[self.test_idx]
-    
+
     def get_client_view(
         self,
         client_id: int,
