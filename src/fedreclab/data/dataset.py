@@ -87,24 +87,17 @@ class InteractionDataset:
         if not include_train and not include_validation and not include_test:
             raise ValueError("At least one of include_train, include_validation, or include_test must be True")
 
+        parts = []
         if include_train:
-            if not include_validation and not include_test:
-                return self.train_interactions.iloc[self.client_partition.client_to_train_indices[client_id]]
-            elif include_validation and not include_test:
-                return self.train_interactions.iloc[self.client_partition.client_to_train_indices[client_id]].append(self.val_interactions.iloc[self.client_partition.client_to_val_indices[client_id]])
-            elif not include_validation and include_test:
-                return self.train_interactions.iloc[self.client_partition.client_to_train_indices[client_id]].append(self.test_interactions.iloc[self.client_partition.client_to_test_indices[client_id]])
-            else:
-                return self.train_interactions.iloc[self.client_partition.client_to_train_indices[client_id]].append(self.val_interactions.iloc[self.client_partition.client_to_val_indices[client_id]]).append(self.test_interactions.iloc[self.client_partition.client_to_test_indices[client_id]])
-        else:
-            if include_validation and not include_test:
-                return self.val_interactions.iloc[self.client_partition.client_to_val_indices[client_id]]
-            elif not include_validation and include_test:
-                return self.test_interactions.iloc[self.client_partition.client_to_test_indices[client_id]]
-            elif include_validation and include_test:
-                return self.val_interactions.iloc[self.client_partition.client_to_val_indices[client_id]].append(self.test_interactions.iloc[self.client_partition.client_to_test_indices[client_id]])
-            else:
-                raise ValueError("At least one of include_validation or include_test must be True")
+            parts.append(self.train_interactions.iloc[self.client_partition.client_to_train_indices[client_id]])
+        if include_validation:
+            parts.append(self.val_interactions.iloc[self.client_partition.client_to_val_indices[client_id]])
+        if include_test:
+            parts.append(self.test_interactions.iloc[self.client_partition.client_to_test_indices[client_id]])
+
+        if len(parts) == 1:
+            return parts[0]
+        return pd.concat(parts, ignore_index=True)
 
     def split_data(self):
         self.train_idx, val_idx, test_idx = self.splitting_strategy.split(self.interaction_data)
