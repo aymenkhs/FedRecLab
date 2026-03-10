@@ -89,7 +89,8 @@ class SimpleAvg(FedAvg):
         updates: List[torch.Tensor] | List[np.ndarray],
         param_io: ParamIO,
     ):
-        weights = np.ones(len(updates), dtype=np.float64)
+        n = len(updates)
+        weights = np.ones(n, dtype=np.float64) / n
         return self._aggregate_with_weights(updates, weights)
 
 
