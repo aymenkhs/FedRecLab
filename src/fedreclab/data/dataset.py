@@ -137,11 +137,7 @@ class InteractionDataset:
 
     def partition_clients(self):
         self.client_partition = self.client_partitioning_strategy.partition(self.train_interactions)
-        all_train_indices = [
-            idx for indices in self.client_partition.client_to_train_indices.values()
-            for idx in indices
-        ]
-        self.interaction_data.loc[all_train_indices, 'client_id'] = (
-            self.interaction_data.loc[all_train_indices, self._user_col]
+        self.interaction_data['client_id'] = (
+            self.interaction_data[self._user_col]
             .map(self.client_partition.user_ids_2_client_ids)
         )
