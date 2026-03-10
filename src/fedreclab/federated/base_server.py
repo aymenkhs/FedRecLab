@@ -540,31 +540,36 @@ class BaseFederatedServer:
                 self.early_stopping_best_result = float('-inf')
 
     def _early_stopping_with_patience(self, current_round: int):
-        early_stopping_trigger = False
-        diff = self.current_metrics[self.early_stopping_parameters["metric"]] - self.early_stopping_best_result
+        metric_name = self.early_stopping_parameters["metric"]
+        direction = self.early_stopping_parameters["direction"]
+        threshold = self.early_stopping_parameters["threshold"]
 
-        if self.early_stopping_parameters["direction"] == "min":
-            if diff < self.early_stopping_parameters["threshold"]:
-                early_stopping_trigger = True
-        elif self.early_stopping_parameters["direction"] == "max":
-            if diff > self.early_stopping_parameters["threshold"]:
-                early_stopping_trigger = True
-        else:
-            raise ValueError(f"Invalid early stopping direction: {self.early_stopping_parameters['direction']}")
+        current_value = self.current_metrics[metric_name]
+        best_value = self.early_stopping_best_result
 
-        if early_stopping_trigger:
-            self._early_stopping_patience += 1
-            logger.info(
-                f"Early stopping triggered at round {current_round} with patience "
-                f"{self._early_stopping_patience}. Current metric: "
-                f"{self.current_metrics[self.early_stopping_parameters['metric']]}, "
-                f"Best metric: {self.early_stopping_best_result}"
-            )
+        # Determine whether the monitored metric has improved by more than
+        # the threshold. For "min", improvement == lower; for "max", higher.
+        if direction == "min":
+            improved = current_value < (best_value - threshold)
+        elif direction == "max":
+            improved = current_value > (best_value + threshold)
         else:
+            raise ValueError(f"Invalid early stopping direction: {direction}")
+
+        if improved:
+            # Reset patience and update best result on improvement.
             if self._early_stopping_patience > 0:
                 logger.info(f"Early stopping patience reset at round {current_round}")
             self._early_stopping_patience = 0
-            self.early_stopping_best_result = self.current_metrics[self.early_stopping_parameters["metric"]]
+            self.early_stopping_best_result = current_value
+        else:
+            # No sufficient improvement: increase patience counter.
+            self._early_stopping_patience += 1
+            logger.info(
+                f"Early stopping patience incremented at round {current_round} "
+                f"to {self._early_stopping_patience}. Current {metric_name}: "
+                f"{current_value}, Best {metric_name}: {best_value}"
+            )
 
         if self._early_stopping_patience >= self.early_stopping_parameters["patience"]:
             return True
