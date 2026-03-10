@@ -80,7 +80,7 @@ class Evaluator:
             if metric in self.TOPK_METRIC_CLASSES:
                 for k in self.topk:
                     metric_instance = self.TOPK_METRIC_CLASSES[metric](k=k)
-                    metrics_results[f"{metric}@{k}"] = metric_instance.compute(item_rankings, targets)
+                    metrics_results[f"{metric}@{k}"] = metric_instance.compute(targets, item_rankings)
             elif metric in self.NON_TOPK_METRIC_CLASSES:
                 metric_class = self.NON_TOPK_METRIC_CLASSES[metric]
                 metrics_results[metric] = metric_class.compute(item_rankings, targets)
