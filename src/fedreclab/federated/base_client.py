@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Union, Any
 from dataclasses import dataclass
 
 import numpy as np
@@ -55,7 +55,7 @@ class BaseClientAlgorithm:
         num_items: int,
         client_dataset_view: pd.DataFrame,
         users_in_client: List[int],
-    ) -> Dict[str, Any]:
+    ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], Any]]:
         raise NotImplementedError("Subclasses must implement this method")
 
     def local_train(self, training_request: ClientTrainingRequest) -> ClientTrainingResponse:

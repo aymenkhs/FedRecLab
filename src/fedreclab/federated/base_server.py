@@ -107,7 +107,7 @@ class BaseFederatedServer:
             users_in_client = client_partition.client_ids_2_user_ids[client_id]
             client_train_indices = self.interaction_dataset.get_client_view(client_id, include_validation=True, include_test=True)
 
-            local_parameters = self.client_algorithm.initialize_local_parameters(
+            result = self.client_algorithm.initialize_local_parameters(
                 client_id=client_id,
                 total_num_users=self.interaction_dataset.num_users,
                 num_users=len(users_in_client),
@@ -115,9 +115,16 @@ class BaseFederatedServer:
                 client_dataset_view=client_train_indices,
                 users_in_client=users_in_client,
             )
+            if isinstance(result, tuple):
+                local_parameters, optimizer_state = result
+            else:
+                local_parameters = result
+                optimizer_state = None
+
             self.client_states[client_id] = self.client_state_class(
                 client_id=client_id,
                 local_parameters=local_parameters,
+                optimizer_state=optimizer_state,
             )
         return self.client_states
 
