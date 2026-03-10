@@ -20,6 +20,10 @@ class BaseAggregation:
     ):
         raise NotImplementedError("Subclasses must implement this method")
 
+    def _to_torch_like(self, arr: np.ndarray, like: torch.Tensor) -> torch.Tensor:
+        """Preserve input dtype/device when returning torch outputs."""
+        return torch.as_tensor(arr, dtype=like.dtype, device=like.device)
+
     def on_round_start(self, previous_round_statistics: RoundStatistics):
         pass
 
@@ -47,12 +51,22 @@ class FedAvg(BaseAggregation):
             for key in updates[0]:
                 key_updates = [u[key] for u in updates]
                 if isinstance(key_updates[0], torch.Tensor):
+                    # preserve dtype/device of the first update to return a torch tensor with the same dtype/device
+                    like = key_updates[0]
                     key_updates = [u.detach().cpu().numpy() for u in key_updates]
-                result[key] = self._average_dense_parameters(key_updates, weights)
+                    result[key] = self._to_torch_like(
+                        self._average_dense_parameters(key_updates, weights),
+                        like,
+                    )
+                else:
+                    result[key] = self._average_dense_parameters(key_updates, weights)
             return result
 
         if isinstance(updates[0], torch.Tensor):
+            # preserve dtype/device of the first update to return a torch tensor with the same dtype/device
+            like = updates[0]
             updates = [u.detach().cpu().numpy() for u in updates]
+            return self._to_torch_like(self._average_dense_parameters(updates, weights), like)
         return self._average_dense_parameters(updates, weights)
 
     def aggregate(
