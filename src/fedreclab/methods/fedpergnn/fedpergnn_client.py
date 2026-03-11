@@ -93,27 +93,17 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             ratings_np = np.ones(len(training_data), dtype=np.float32)
 
         # History and neighbor embeddings are expected from extra_payload.
+        # WarmupA is handled on the server by sending all-zero neighbor tensors.
         expanded_payload_all = training_request.extra_payload or {}
         expanded_for_client = expanded_payload_all.get("expanded_user_data", {}).get(client_id, None)
+        if expanded_for_client is None:
+            raise KeyError(
+                "FedPerGNN requires server-provided expansion payload at "
+                "extra_payload['expanded_user_data'][client_id]."
+            )
 
-        if expanded_for_client is not None:
-            history_items_np = expanded_for_client.get("history_item_ids")
-            neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
-        else:
-            # Fallback: simple history with no neighbors.
-            # History is the most recent `history_len` interactions for this user,
-            # determined by timestamp if available, otherwise by original order.
-            if "timestamp" in training_data.columns:
-                base = training_data.sort_values(by="timestamp")
-            else:
-                base = training_data
-
-            hist_items = base[item_col].values.astype(np.int64)[-self.history_len :]
-            if hist_items.shape[0] < self.history_len:
-                pad_len = self.history_len - hist_items.shape[0]
-                hist_items = np.pad(hist_items, (0, pad_len), mode="constant", constant_values=0)
-            history_items_np = hist_items
-            neighbor_emb_np = None
+        history_items_np = expanded_for_client.get("history_item_ids")
+        neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
 
         # History and neighbor embeddings are shared across all interactions
         # for this user, so we broadcast them per-batch when constructing
@@ -239,16 +229,16 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         model.to(device)
         model.eval()
 
-        # Build a simple history from the client's training data if available
-        # via extra_payload, otherwise use zeros.
+        # Expansion payload is produced server-side and is mandatory for FedPerGNN.
         expanded_payload_all = extra_payload or {}
         expanded_for_client = expanded_payload_all.get("expanded_user_data", {}).get(client_id, None)
-        if expanded_for_client is not None:
-            history_items_np = expanded_for_client.get("history_item_ids")
-            neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
-        else:
-            history_items_np = np.zeros((self.history_len,), dtype=np.int64)
-            neighbor_emb_np = None
+        if expanded_for_client is None:
+            raise KeyError(
+                "FedPerGNN requires server-provided expansion payload at "
+                "extra_payload['expanded_user_data'][client_id]."
+            )
+        history_items_np = expanded_for_client.get("history_item_ids")
+        neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
 
         scores: Dict[int, np.ndarray] = {}
 
