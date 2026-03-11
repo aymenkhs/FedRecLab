@@ -87,6 +87,13 @@ class BaseFederatedServer:
         self.current_round_statistics = None
         self.previous_round_statistics = None
 
+        # Current round index (set at the start of run_round).
+        self.current_round: int | None = None
+
+        # Selected clients for the current round (set in run_round after selection).
+        # Exposed as an attribute so hooks can access it without changing signatures.
+        self.selected_client_ids: List[int] | None = None
+
         self.client_state_class = client_state_class
         self.client_states = {}
         self._initialize_client_states()
@@ -115,6 +122,10 @@ class BaseFederatedServer:
                 client_dataset_view=client_train_indices,
                 users_in_client=users_in_client,
             )
+
+            # initialize_local_parameters may return:
+            #   dict               -> local_parameters only
+            #   (dict, state|None) -> local_parameters + initial optimizer state
             if isinstance(result, tuple):
                 local_parameters, optimizer_state = result
             else:
@@ -162,15 +173,21 @@ class BaseFederatedServer:
     def _before_training(self):
         pass
 
+    def _post_selection_callback(self):
+        pass
+
     def run_round(self, current_round: int):
 
         # Run start of round callbacks
+        self.current_round = current_round
         self._on_round_start_server()
         self.client_selection_module.on_round_start(self.previous_round_statistics)
         self.__aggregation_round_callback(on_round_start=True)
 
         # Select clients
         selected_client_ids = self.client_selection_module.select()
+        self.selected_client_ids = selected_client_ids
+        self._post_selection_callback()
 
         training_responses = []
         for client_id in selected_client_ids:
