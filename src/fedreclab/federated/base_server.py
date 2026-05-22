@@ -208,7 +208,14 @@ class BaseFederatedServer:
         client_state = self.client_states[client_id]
         client_partition = self.interaction_dataset.client_partition
         training_data = self.interaction_dataset.get_client_view(client_id, include_validation=False, include_test=False)
-        validation_data = self.interaction_dataset.get_client_view(client_id, include_train=False, include_validation=True, include_test=False)
+        validation_data = None
+        if getattr(self.interaction_dataset, "include_validation", False):
+            validation_data = self.interaction_dataset.get_client_view(
+                client_id,
+                include_train=False,
+                include_validation=True,
+                include_test=False,
+            )
         training_request = ClientTrainingRequest(
             client_id=client_id,
             current_round=current_round,
