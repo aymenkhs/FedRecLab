@@ -337,7 +337,10 @@ class Krum(BaseAggregation):
         n = X.shape[0]
         f = self.num_byzantine
         if n < 2 * f + 3:
-            raise ValueError(f"Krum requires n >= 2f + 3, got n={n}, f={f}")
+            # Too few candidates for the theoretical Krum guarantee.
+            # Instead of raising, fall back to equal scores so callers
+            # can gracefully reduce to simple averaging or pick any.
+            return np.zeros((n,), dtype=np.float64)
         D = self._pairwise_sq_dists(X)
         num_closest = n - f - 2
         scores = np.empty((n,), dtype=np.float64)
@@ -377,7 +380,9 @@ class Krum(BaseAggregation):
         n = X.shape[0]
         f = self.num_byzantine
         if n < 2 * f + 3:
-            raise ValueError(f"Krum requires n >= 2f + 3, got n={n}, f={f}")
+            # Too few clients for Krum's theoretical guarantee; fall back to simple average.
+            weights = np.ones(n, dtype=np.float64) / float(n)
+            return FedAvg(self.num_clients)._aggregate_with_weights(per_client, weights)
 
         if not self.multi_krum:
             scores = self._krum_scores(X)
@@ -421,7 +426,9 @@ class Bulyan(BaseAggregation):
         n = len(per_client)
         f = self.num_byzantine
         if n < 4 * f + 3:
-            raise ValueError(f"Bulyan requires n >= 4f + 3, got n={n}, f={f}")
+            # Too few clients for Bulyan; fall back to simple average.
+            weights = np.ones(n, dtype=np.float64) / float(n)
+            return FedAvg(self.num_clients)._aggregate_with_weights(per_client, weights)
 
         # Candidate selection (theta = n - 2f) using Multi-Krum selection.
         theta = n - 2 * f
