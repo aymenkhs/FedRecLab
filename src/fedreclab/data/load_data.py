@@ -123,3 +123,58 @@ def load_cornac_dataset(
     interaction_dataset.partition_clients()
     return interaction_dataset
 
+
+def load_dataframe_dataset(
+    df: pd.DataFrame,
+    splitting_strategy: BaseSplitStrategy,
+    client_partitioning_strategy: BaseClientPartitionStrategy,
+    user_col: str = "user_id",
+    item_col: str = "item_id",
+    rating_col: str | None = "rating",
+    time_col: str | None = "timestamp",
+    include_validation: bool = False,
+    include_test: bool = False,
+    seed: int = 42,
+    rating_exclusion_threshold: float = 0.0,
+    k_core: int = 5,
+):
+    if user_col not in df.columns:
+        raise ValueError(f"user_col '{user_col}' not found in dataframe columns: {list(df.columns)}")
+    if item_col not in df.columns:
+        raise ValueError(f"item_col '{item_col}' not found in dataframe columns: {list(df.columns)}")
+
+    # Check rating column
+    if rating_col is not None:
+        if rating_col not in df.columns:
+            logging.warning(
+                f"Rating column '{rating_col}' not found in dataframe, "
+                f"ignoring ratings."
+            )
+            rating_col = None
+        elif rating_exclusion_threshold > 0.0:
+            df = df[df[rating_col] >= rating_exclusion_threshold]
+
+    # Check timestamp column
+    if time_col is not None and time_col not in df.columns:
+        logging.warning(
+            f"Timestamp column '{time_col}' not found in dataframe, "
+            f"ignoring timestamps."
+        )
+        time_col = None
+
+    interaction_dataset = InteractionDataset(
+        interaction_data=df,
+        splitting_strategy=splitting_strategy,
+        client_partitioning_strategy=client_partitioning_strategy,
+        k_core=k_core,
+        include_validation=include_validation,
+        include_test=include_test,
+        seed=seed,
+        user_col=user_col,
+        item_col=item_col,
+        rating_col=rating_col,
+        time_col=time_col,
+    )
+    interaction_dataset.split_data()
+    interaction_dataset.partition_clients()
+    return interaction_dataset
