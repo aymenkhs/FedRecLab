@@ -112,10 +112,12 @@ class InteractionDataset:
         self.interaction_data.loc[self.train_idx, 'split'] = 'train'
         if self.include_validation:
             self.val_idx = val_idx
-            self.interaction_data.loc[self.val_idx, 'split'] = 'val'
+            if self.val_idx is not None and len(self.val_idx) > 0:
+                self.interaction_data.loc[self.val_idx, 'split'] = 'val'
         if self.include_test:
             self.test_idx = test_idx
-            self.interaction_data.loc[self.test_idx, 'split'] = 'test'
+            if self.test_idx is not None and len(self.test_idx) > 0:
+                self.interaction_data.loc[self.test_idx, 'split'] = 'test'
 
     @property
     def num_clients(self):
