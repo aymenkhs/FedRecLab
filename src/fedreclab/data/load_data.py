@@ -69,6 +69,7 @@ def load_cornac_dataset(
     time_col: str | None = "timestamp",
     include_validation: bool = False,
     include_test: bool = False,
+    k_core: int = 5,
     seed: int = 42,
     rating_exclusion_threshold: float = 0.0,
 ):
@@ -116,7 +117,9 @@ def load_cornac_dataset(
         item_col=item_col,
         rating_col=rating_col,
         time_col=time_col,
+        k_core=k_core,
     )
     interaction_dataset.split_data()
     interaction_dataset.partition_clients()
     return interaction_dataset
+

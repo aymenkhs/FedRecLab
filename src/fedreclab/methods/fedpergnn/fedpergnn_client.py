@@ -1,4 +1,5 @@
 import time
+from collections import defaultdict
 from typing import Dict, Any, Tuple, List
 
 import numpy as np
@@ -24,6 +25,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         local_epochs: int = 1,
         lr: float = 1e-3,
         batch_size: int = 128,
+        neighbor_embeddings_trainable: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -32,6 +34,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         self.local_epochs = local_epochs
         self.lr = lr
         self.batch_size = batch_size
+        self.neighbor_embeddings_trainable = neighbor_embeddings_trainable
 
         self._num_items: int | None = None
 
@@ -74,6 +77,15 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
         model: FedPerGNNModel = client_state.local_parameters["model"]
         model.load_server_state(training_request.global_payload["model_state"])
+
+        # Load central user embedding from canonical table (central user is always trained).
+        users_in_client = training_request.users_in_client
+        central_user_id = int(users_in_client[0]) if users_in_client else 0
+        if "user_embeddings" in training_request.global_payload:
+            user_emb_table = training_request.global_payload["user_embeddings"]
+            row = np.asarray(user_emb_table[central_user_id], dtype=np.float32)
+            model.load_user_state({"user_embedding.weight": row.reshape(1, -1)})
+
         model.to(device)
         model.train()
 
@@ -104,10 +116,22 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
         history_items_np = expanded_for_client.get("history_item_ids")
         neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
+        neighbor_user_ids_np = expanded_for_client.get("neighbor_user_ids")
 
-        # History and neighbor embeddings are shared across all interactions
-        # for this user, so we broadcast them per-batch when constructing
-        # tensors.
+        # Accumulators for neighbor embedding updates when neighbor_embeddings_trainable.
+        sum_emb: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
+        sum_grad: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
+        count_grad: Dict[int, int] = defaultdict(int)
+        count_emb: Dict[int, int] = defaultdict(int)
+        if self.neighbor_embeddings_trainable and neighbor_emb_np is not None and neighbor_user_ids_np is not None:
+            L, N = neighbor_user_ids_np.shape
+            for ell in range(L):
+                for n in range(N):
+                    uid = int(neighbor_user_ids_np[ell, n])
+                    if uid >= 0:
+                        sum_emb[uid] += neighbor_emb_np[ell, n, :]
+                        count_emb[uid] += 1
+
         num_examples = len(item_ids_np)
         all_losses: List[float] = []
         num_training_examples = 0
@@ -138,7 +162,6 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                     ratings_np_shuffled[start:end], dtype=torch.float32, device=device
                 )
 
-                # Broadcast history / neighbor tensors to the batch size.
                 b_hist_items = torch.as_tensor(
                     np.repeat(history_items_np[None, :], repeats=b_item_ids.size(0), axis=0),
                     dtype=torch.long,
@@ -151,6 +174,8 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                         dtype=torch.float32,
                         device=device,
                     )
+                    if self.neighbor_embeddings_trainable:
+                        b_neighbor_emb.requires_grad_(True)
                 else:
                     b_neighbor_emb = None
 
@@ -163,6 +188,17 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                 )
                 loss = torch.mean((preds - b_ratings) ** 2)
                 loss.backward()
+
+                if self.neighbor_embeddings_trainable and b_neighbor_emb is not None and b_neighbor_emb.grad is not None and neighbor_user_ids_np is not None:
+                    grad_np = b_neighbor_emb.grad.detach().cpu().numpy()
+                    B, L, N, H = grad_np.shape
+                    for ell in range(L):
+                        for n in range(N):
+                            uid = int(neighbor_user_ids_np[ell, n])
+                            if uid >= 0:
+                                sum_grad[uid] += grad_np[:, ell, n, :].sum(axis=0)
+                                count_grad[uid] += B
+
                 optimizer.step()
 
                 epoch_loss += loss.item()
@@ -181,13 +217,39 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             for k, v in server_state.items()
         }
 
+        # Sparse user_embeddings update: central user always; neighbor rows when neighbor_embeddings_trainable.
+        user_embedding_row = model.get_user_state()["user_embedding.weight"].detach().cpu().numpy()
+        user_ids_list: List[int] = [central_user_id]
+        embeddings_list: List[np.ndarray] = [np.asarray(user_embedding_row.squeeze(0), dtype=np.float32)]
+        if self.neighbor_embeddings_trainable and count_emb and count_grad:
+            for uid in count_emb:
+                if uid == central_user_id:
+                    continue
+                if count_grad[uid] > 0:
+                    mean_emb = sum_emb[uid] / count_emb[uid]
+                    mean_grad = sum_grad[uid] / count_grad[uid]
+                    updated = mean_emb - self.lr * mean_grad
+                    user_ids_list.append(uid)
+                    embeddings_list.append(np.asarray(updated, dtype=np.float32))
+
+        user_emb_update = {
+            "user_ids": np.array(user_ids_list, dtype=np.int64),
+            "embeddings": np.stack(embeddings_list, axis=0).astype(np.float32),
+        }
+
         updates_packages: Dict[str, UpdatePackage] = {
             "model_state": UpdatePackage(
                 param_name="model_state",
                 param_io=ParamIO(residency="server", exchange="params", apply_to="server"),
                 param_value=numpy_state,
                 param_metadata={},
-            )
+            ),
+            "user_embeddings": UpdatePackage(
+                param_name="user_embeddings",
+                param_io=ParamIO(residency="server", exchange="params", apply_to="custom"),
+                param_value=user_emb_update,
+                param_metadata={},
+            ),
         }
 
         updated_state = ClientStateBase(

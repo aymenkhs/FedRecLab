@@ -11,6 +11,7 @@ class InteractionDataset:
         interaction_data: pd.DataFrame,
         splitting_strategy: BaseSplitStrategy,
         client_partitioning_strategy: BaseClientPartitionStrategy,
+        k_core: int = 0,
         include_validation: bool = False,
         include_test: bool = False,
         splits_included: bool = False,
@@ -25,7 +26,11 @@ class InteractionDataset:
         self._rating_col = rating_col
         self._time_col = time_col
 
+        self.k_core = k_core
+
         self.interaction_data = interaction_data
+        if self.k_core and self.k_core > 0:
+            self._apply_k_core_filter(self.k_core)
         self._remap_ids()
 
         self.num_users = len(self.interaction_data[self._user_col].unique())
@@ -117,6 +122,35 @@ class InteractionDataset:
         if not hasattr(self, 'client_partition'):
             raise ValueError("Client partition not set. Call partition_clients() first.")
         return self.client_partition.num_clients
+
+    def _apply_k_core_filter(self, k: int) -> None:
+        """Apply bipartite k-core filtering on users and items.
+
+        Iteratively removes users and items with fewer than k interactions,
+        until all remaining users and items satisfy the constraint.
+        """
+        df = self.interaction_data
+
+        while True:
+            user_counts = df.groupby(self._user_col)[self._item_col].count()
+            valid_users = user_counts[user_counts >= k].index
+
+            item_counts = df.groupby(self._item_col)[self._user_col].count()
+            valid_items = item_counts[item_counts >= k].index
+
+            prev_len = len(df)
+            df = df[
+                df[self._user_col].isin(valid_users)
+                & df[self._item_col].isin(valid_items)
+            ]
+
+            if len(df) == prev_len:
+                break
+
+            if len(df) == 0:
+                break
+
+        self.interaction_data = df.reset_index(drop=True)
 
     def _remap_ids(self):
         """Remap user and item IDs to contiguous 0-indexed integers for embedding lookups.

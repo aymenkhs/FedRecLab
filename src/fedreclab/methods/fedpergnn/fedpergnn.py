@@ -1,10 +1,18 @@
+from collections import defaultdict
 from typing import Dict, Any, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
+from src.fedreclab.federated.base_client import ClientTrainingResponse
+from src.fedreclab.federated.utils import ParamIO, RoundStatistics
+from src.fedreclab.federated.aggregation import (
+    DistFedAvgItems,
+    DistFedAvgUsers,
+    Krum,
+    Bulyan,
+)
 from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
@@ -15,7 +23,7 @@ class FedPerGNN(BaseFederatedServer):
         history_len: int = 20,
         neighbor_len: int = 10,
         warmup_rounds: int = 1,
-        user_embeddings_trainable: bool = False,
+        neighbor_embeddings_trainable: bool = False,
         user_embeddings_aggregate: bool = False,
         expanded_users: Optional[Dict[int, np.ndarray]] = None,
         history_item_ids: Optional[Dict[int, np.ndarray]] = None,
@@ -27,8 +35,8 @@ class FedPerGNN(BaseFederatedServer):
         self.neighbor_len = neighbor_len
         self.warmup_rounds = warmup_rounds
 
-        # Flags (accounted for now; aggregation/trainability can be implemented later)
-        self.user_embeddings_trainable = user_embeddings_trainable
+        # Flags: neighbor_embeddings_trainable applies only to neighbor rows; central user is always trainable.
+        self.neighbor_embeddings_trainable = neighbor_embeddings_trainable
         self.user_embeddings_aggregate = user_embeddings_aggregate
 
         # Optional externally-provided expansion structure
@@ -51,12 +59,12 @@ class FedPerGNN(BaseFederatedServer):
                 exchange="params",
                 apply_to="server",
             ),
-            # Canonical user embedding table (server-side). For now we do not exchange/aggregate it,
-            # but we keep it as a first-class server parameter to support expansion and later flags.
+            # Canonical user embedding table (server-side). Exchanged so clients can load/send sparse updates.
+            # apply_to="custom": we scatter or per-user aggregate then scatter in _apply_aggregated_result_custom.
             "user_embeddings": ParamIO(
                 residency="server",
-                exchange="none",
-                apply_to="server",
+                exchange="params",
+                apply_to="custom",
             ),
         }
 
@@ -248,6 +256,214 @@ class FedPerGNN(BaseFederatedServer):
             expanded[client_id] = {
                 "history_item_ids": hist,
                 "neighbor_embeddings": neigh_emb,
+                "neighbor_user_ids": neigh_ids,
             }
+
+    def _aggregate_user_embeddings(
+        self,
+        training_responses: List[ClientTrainingResponse],
+    ) -> np.ndarray:
+        """
+        Produce updated canonical user_embeddings table from sparse client updates.
+        When user_embeddings_aggregate=False: scatter each client's (user_ids, embeddings).
+        When user_embeddings_aggregate=True: group by user_id, call configured aggregator per user, then scatter.
+        """
+        table = np.array(self.global_parameters["user_embeddings"], copy=True)
+        selected = self.current_round_statistics.selected
+        param_io = self.param_ios["user_embeddings"]
+        agg = self.aggregation_strategies["user_embeddings"]
+
+        # Collect sparse updates: list of (client_id, user_ids, embeddings) aligned with training_responses
+        updates_by_client: List[tuple] = []
+        for resp in training_responses:
+            pkg = resp.updates_packages.get("user_embeddings")
+            if pkg is None:
+                continue
+            val = pkg.param_value
+            if isinstance(val, dict) and "user_ids" in val and "embeddings" in val:
+                uid = np.asarray(val["user_ids"], dtype=np.int64)
+                emb = np.asarray(val["embeddings"], dtype=np.float32)
+                if emb.ndim == 1:
+                    emb = emb.reshape(1, -1)
+                updates_by_client.append((resp.client_id, uid, emb))
+            else:
+                continue
+
+        if not updates_by_client:
+            return table
+
+        # Simple scatter when user-level aggregation is disabled.
+        if not self.user_embeddings_aggregate:
+            for (client_id, user_ids, embeddings) in updates_by_client:
+                for i, u in enumerate(user_ids):
+                    if 0 <= u < table.shape[0]:
+                        table[int(u)] = embeddings[i]
+            return table
+
+        # Build reverse map: anchor client id for each user.
+        anchor_client_for_user: Dict[int, int] = {}
+        cp = self.interaction_dataset.client_partition
+        for client_id in range(self.num_clients):
+            users_in_client = cp.client_ids_2_user_ids[client_id]
+            if users_in_client:
+                u_anchor = int(users_in_client[0])
+                anchor_client_for_user[u_anchor] = client_id
+
+        # Group by user_id: user_id -> list of (client_id, is_anchor, embedding_row)
+        per_user: Dict[int, List[tuple]] = defaultdict(list)
+        for (client_id, user_ids, embeddings) in updates_by_client:
+            for i, u in enumerate(user_ids):
+                u_int = int(u)
+                if 0 <= u_int < table.shape[0]:
+                    is_anchor = anchor_client_for_user.get(u_int) == client_id
+                    per_user[u_int].append(
+                        (client_id, is_anchor, np.asarray(embeddings[i], dtype=np.float32))
+                    )
+
+        stats = self.current_round_statistics
+        for user_id, contribs in per_user.items():
+            if len(contribs) == 0:
+                continue
+            client_ids = [c[0] for c in contribs]
+            prev_row = np.asarray(table[user_id], dtype=np.float32)
+            round_info_user = RoundStatistics(
+                current_round=stats.current_round,
+                selected=client_ids,
+                responded=client_ids,
+                dropped=[],
+                num_training_examples={cid: stats.num_training_examples.get(cid, 1) for cid in client_ids},
+                training_losses={cid: stats.training_losses.get(cid, []) for cid in client_ids},
+                training_durations={cid: stats.training_durations.get(cid, 0.0) for cid in client_ids},
+            )
+
+            if isinstance(agg, DistFedAvgUsers):
+                embeddings_list = [c[2] for c in contribs]
+                is_anchor_list = [c[1] for c in contribs]
+                updates_user = {
+                    "embeddings": embeddings_list,
+                    "is_anchor": is_anchor_list,
+                }
+                aggregated_row = agg.aggregate(
+                    round_info_user,
+                    prev_row,
+                    updates_user,
+                    param_io,
+                )
+            else:
+                updates_user = [c[2] for c in contribs]
+                # Robust aggregators like Krum/Bulyan: fallback to mean when too few contributors.
+                if isinstance(agg, (Krum, Bulyan)) and len(updates_user) < 3:
+                    aggregated_row = np.mean(
+                        np.stack(updates_user, axis=0), axis=0
+                    ).astype(np.float32)
+                else:
+                    aggregated_row = agg.aggregate(
+                        round_info_user,
+                        prev_row,
+                        updates_user,
+                        param_io,
+                    )
+
+            if hasattr(aggregated_row, "detach"):
+                aggregated_row = aggregated_row.detach().cpu().numpy()
+            else:
+                aggregated_row = np.asarray(aggregated_row, dtype=np.float32)
+            table[user_id] = aggregated_row
+
+        return table
+
+    def aggregate_parameters(
+        self,
+        training_responses: List[ClientTrainingResponse],
+    ):
+        """Override to handle user_embeddings with sparse updates and per-user aggregation."""
+        if (
+            "model_state" in self.aggregation_strategies
+            and isinstance(self.aggregation_strategies["model_state"], DistFedAvgItems)
+        ):
+            agg_items = self.aggregation_strategies["model_state"]
+            agg_items.prev_user_emb = np.array(
+                self.global_parameters["user_embeddings"], copy=True
+            )
+            sel = self.current_round_statistics.selected
+            cp = self.interaction_dataset.client_partition
+            agg_items.anchor_user_ids = [
+                int(cp.client_ids_2_user_ids[cid][0]) for cid in sel
+            ]
+            if agg_items.user_masking:
+                num_users = int(self.global_parameters["user_embeddings"].shape[0])
+                mask = np.zeros((num_users, num_users), dtype=np.float64)
+                for cid in sel:
+                    neigh = self._expansion_cache.get(cid, {}).get("neighbor_user_ids")
+                    if neigh is None:
+                        continue
+                    u0 = int(cp.client_ids_2_user_ids[cid][0])
+                    for v in np.asarray(neigh).reshape(-1):
+                        v = int(v)
+                        if 0 <= v < num_users:
+                            mask[u0, v] = 1.0
+                            mask[v, u0] = 1.0
+                np.fill_diagonal(mask, 1.0)
+                agg_items.neighborhood_mask = mask
+            else:
+                agg_items.neighborhood_mask = None
+
+        for param_name, param_io in self.param_ios.items():
+            if param_io.exchange is None or param_io.exchange == "none":
+                continue
+            if param_name == "user_embeddings":
+                updated_table = self._aggregate_user_embeddings(training_responses)
+                self._apply_aggregated_result(
+                    param_name=param_name,
+                    aggregated_result=updated_table,
+                    param_io=param_io,
+                    selected_client_ids=self.current_round_statistics.selected,
+                )
+                continue
+            # Default path for other params
+            _convert = getattr(
+                super(),
+                "_BaseFederatedServer__convert_to_framework_compatible",
+            )
+            if param_io.residency == "server":
+                previous_parameters = self.global_parameters[param_name]
+            else:
+                previous_parameters = [
+                    self.client_states[cid].local_parameters[param_name]
+                    for cid in self.current_round_statistics.selected
+                ]
+                previous_parameters = _convert(previous_parameters)
+            updates = [
+                r.updates_packages[param_name].param_value
+                for r in training_responses
+            ]
+            updates = _convert(updates)
+            aggregated_results = self.aggregation_strategies[param_name].aggregate(
+                self.current_round_statistics,
+                previous_parameters,
+                updates,
+                param_io,
+            )
+            self._apply_aggregated_result(
+                param_name=param_name,
+                aggregated_result=aggregated_results,
+                param_io=param_io,
+                selected_client_ids=self.current_round_statistics.selected,
+            )
+
+    def _apply_aggregated_result_custom(
+        self,
+        param_name: str,
+        aggregated_result: Any,
+        param_io: ParamIO,
+        selected_client_ids: List[int],
+    ):
+        """Apply aggregated user_embeddings table to global_parameters."""
+        if param_name == "user_embeddings":
+            self.global_parameters["user_embeddings"] = aggregated_result
+            return
+        raise NotImplementedError(
+            f"Custom apply not implemented for parameter '{param_name}'"
+        )
 
 
