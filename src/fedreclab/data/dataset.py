@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 from src.fedreclab.data.split import BaseSplitStrategy
@@ -28,7 +29,7 @@ class InteractionDataset:
 
         self.k_core = k_core
 
-        self.interaction_data = interaction_data
+        self.interaction_data = interaction_data.reset_index(drop=True)
         if self.k_core and self.k_core > 0:
             self._apply_k_core_filter(self.k_core)
         self._remap_ids()
@@ -45,16 +46,16 @@ class InteractionDataset:
 
         self.seed = seed
 
+        self.train_idx = None
+        self.val_idx = None
+        self.test_idx = None
         if splits_included:
-            self.train_idx = self.interaction_data.index[self.interaction_data['split'] == 'train']
+            split = self.interaction_data["split"].to_numpy()
+            self.train_idx = np.flatnonzero(split == "train")
             if self.include_validation:
-                self.val_idx = self.interaction_data.index[self.interaction_data['split'] == 'val']
+                self.val_idx = np.flatnonzero(split == "val")
             if self.include_test:
-                self.test_idx = self.interaction_data.index[self.interaction_data['split'] == 'test']
-        else:
-            self.train_idx = None
-            self.val_idx = None
-            self.test_idx = None
+                self.test_idx = np.flatnonzero(split == "test")
 
     @property
     def train_interactions(self):
@@ -109,15 +110,17 @@ class InteractionDataset:
 
     def split_data(self):
         self.train_idx, val_idx, test_idx = self.splitting_strategy.split(self.interaction_data)
-        self.interaction_data.loc[self.train_idx, 'split'] = 'train'
+        split_labels = np.empty(len(self.interaction_data), dtype=object)
+        split_labels[self.train_idx] = "train"
         if self.include_validation:
             self.val_idx = val_idx
             if self.val_idx is not None and len(self.val_idx) > 0:
-                self.interaction_data.loc[self.val_idx, 'split'] = 'val'
+                split_labels[self.val_idx] = "val"
         if self.include_test:
             self.test_idx = test_idx
             if self.test_idx is not None and len(self.test_idx) > 0:
-                self.interaction_data.loc[self.test_idx, 'split'] = 'test'
+                split_labels[self.test_idx] = "test"
+        self.interaction_data["split"] = split_labels
 
     @property
     def num_clients(self):
