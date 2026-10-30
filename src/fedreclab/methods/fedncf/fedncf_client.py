@@ -49,7 +49,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         total_num_users: int,
         num_users: int,
         num_items: int,
-        client_dataset_view: Any,
+        client_train_data_view: Any,
         users_in_client: List[int],
     ) -> Tuple[Dict[str, Any], torch.optim.Optimizer]:
         if self.num_items is None:

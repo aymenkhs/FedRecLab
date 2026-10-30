@@ -112,14 +112,15 @@ class BaseFederatedServer:
         for client_id in range(self.num_clients):
             client_partition = self.interaction_dataset.client_partition
             users_in_client = client_partition.client_ids_2_user_ids[client_id]
-            client_train_indices = self.interaction_dataset.get_client_view(client_id, include_validation=True, include_test=True)
+            client_train_data_view = self.interaction_dataset.get_client_view(
+                client_id, include_validation=False, include_test=False)
 
             result = self.client_algorithm.initialize_local_parameters(
                 client_id=client_id,
                 total_num_users=self.interaction_dataset.num_users,
                 num_users=len(users_in_client),
                 num_items=self.interaction_dataset.num_items,
-                client_dataset_view=client_train_indices,
+                client_train_data_view=client_train_data_view,
                 users_in_client=users_in_client,
             )
 

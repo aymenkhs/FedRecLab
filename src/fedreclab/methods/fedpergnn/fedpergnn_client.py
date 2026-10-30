@@ -44,7 +44,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         total_num_users: int,
         num_users: int,
         num_items: int,
-        client_dataset_view,
+        client_train_data_view,
         users_in_client: List[int],
     ) -> Tuple[Dict[str, Any], Any]:
         if self._num_items is None:

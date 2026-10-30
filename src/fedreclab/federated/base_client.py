@@ -53,7 +53,7 @@ class BaseClientAlgorithm:
         total_num_users: int,
         num_users: int,
         num_items: int,
-        client_dataset_view: pd.DataFrame,
+        client_train_data_view: pd.DataFrame,
         users_in_client: List[int],
     ) -> Union[Dict[str, Any], Tuple[Dict[str, Any], Any]]:
         raise NotImplementedError("Subclasses must implement this method")
