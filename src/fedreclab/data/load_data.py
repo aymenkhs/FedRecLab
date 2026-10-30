@@ -37,6 +37,10 @@ CORNAC_DATASETS = {
 }
 
 CORNAC_DATASETS_VARIANTS = {
+    "movielens_100k": "100K",
+    "movielens_1m": "1M",
+    "movielens_10m": "10M",
+    "movielens_20m": "20M",
     "netflix_small": "small",
     "netflix_original": "original",
 }
