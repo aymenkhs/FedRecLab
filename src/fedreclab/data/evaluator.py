@@ -328,6 +328,45 @@ class FullRankingEvaluator(Evaluator):
         extra_payload: Dict[str, Any],
         split: str,
     ) -> Dict[str, Any]:
+        """Mean ranking metrics over users who have interactions in ``split``.
+
+        Scores come from ``client_algorithm.compute_scores``. Results are
+        ranking metrics only (``"{name}@{k}"``). There is no ``"loss"``
+        key: scoring is unlabelled.
+
+        Parameters
+        ----------
+        current_round : int
+            Round index forwarded to ``logging_callback``.
+        global_parameters : dict
+            Server-resident tensors passed to ``compute_scores``.
+        client_states : dict of int to ClientStateBase
+            Client-resident state keyed by client id.
+        extra_payload : dict
+            Method-specific extras forwarded to ``compute_scores``.
+        split : {"val", "test"}
+            Held-out split to rank.
+
+        Returns
+        -------
+        dict
+            Mean (or CI dict) per metric name. Keys look like ``"ndcg@10"``.
+
+        Raises
+        ------
+        ValueError
+            If ``split`` is not ``"val"`` or ``"test"``, or if no user in
+            ``client_states`` has evaluation interactions for that split.
+
+        Examples
+        --------
+        >>> # doctest: +SKIP
+        >>> results = evaluator.evaluate(0, globals_, states, extra, "val")
+        >>> "ndcg@10" in results
+        True
+        >>> "loss" in results
+        False
+        """
         if split == "test":
             evaluation_data = self.interaction_dataset.test_interactions
             exclude_splits = self.exclude_on_test
