@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Callable, Sequence
+from statistics import NormalDist
 
 import numpy as np
 import pandas as pd
@@ -92,11 +93,48 @@ class Evaluator:
         self,
         metric_values: np.ndarray,
     ) -> Dict[str, float]:
+        """Mean, std, and normal two-sided CI over per-user metric values.
+
+        Half-width is ``z * se`` with ``se = std / sqrt(n)`` and
+        ``z = Phi^{-1}(1 - alpha/2)``, where ``alpha`` is
+        ``self.confidence_interval_alpha``. For ``alpha=0.05`` this is
+        the usual 95% interval (``z ≈ 1.96``).
+
+        Parameters
+        ----------
+        metric_values : array-like
+            One scalar per evaluated user.
+
+        Returns
+        -------
+        dict
+            ``mean``, ``std``, ``ei`` (half-width), and ``ci``
+            (``[lower, upper]``).
+
+        Raises
+        ------
+        ValueError
+            If ``confidence_interval_alpha`` is not in ``(0, 1)``.
+
+        Examples
+        --------
+        >>> ev = Evaluator.__new__(Evaluator)
+        >>> ev.confidence_interval_alpha = 0.05
+        >>> out = ev.compute_confidence_interval(np.array([0.0, 2.0]))
+        >>> round(out["mean"], 6), round(out["ei"] / (1 / np.sqrt(2)), 2)
+        (1.0, 1.96)
+        """
+        alpha = self.confidence_interval_alpha
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(
+                f"confidence_interval_alpha must be in (0, 1), got {alpha}."
+            )
         n = len(metric_values)
         mean = np.mean(metric_values)
         std = np.std(metric_values)
         se = std / np.sqrt(n) if n > 0 else 0.0
-        ei = 1.96 * se
+        z = NormalDist().inv_cdf(1.0 - alpha / 2.0)
+        ei = z * se
         ci_lower = mean - ei
         ci_upper = mean + ei
         return {"mean": mean, "std": std, "ei": ei, "ci": [ci_lower, ci_upper]}
