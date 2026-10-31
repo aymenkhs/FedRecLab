@@ -8,10 +8,8 @@ from cornac.metrics import (
     Recall,
     NDCG,
     NCRR,
-    MAP,
     HitRatio,
     FMeasure,
-    AUC,
 )
 
 from src.fedreclab.federated.base_client import ClientStateBase, BaseClientAlgorithm
@@ -27,11 +25,6 @@ class Evaluator:
         "hr": HitRatio,
         "ncrr": NCRR,
         "fmeasure": FMeasure,
-    }
-
-    NON_TOPK_METRIC_CLASSES = {
-        # "map": MAP,
-        # "auc": AUC,
     }
 
     def __init__(
@@ -82,9 +75,6 @@ class Evaluator:
                 for k in self.topk:
                     metric_instance = self.TOPK_METRIC_CLASSES[metric](k=k)
                     metrics_results[f"{metric}@{k}"] = metric_instance.compute(targets, item_rankings)
-            elif metric in self.NON_TOPK_METRIC_CLASSES:
-                metric_class = self.NON_TOPK_METRIC_CLASSES[metric]
-                metrics_results[metric] = metric_class.compute(item_rankings, targets)
             else:
                 raise ValueError(f"Invalid metric: {metric}")
         return metrics_results
