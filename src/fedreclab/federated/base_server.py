@@ -1,4 +1,5 @@
 from typing import List, Callable, Dict, Any
+import copy
 import logging
 
 import torch
@@ -52,6 +53,12 @@ class BaseFederatedServer:
         self.early_stopping_parameters = early_stopping_parameters
         self.early_stopping_callback = early_stopping_callback
         self._initialize_early_stopping()
+
+        # Scoring checkpoint for the best validation round. Live attributes
+        # keep training; test eval after run() must use these copies.
+        self.best_global_parameters: Dict[str, Any] | None = None
+        self.best_client_states: Dict[int, ClientStateBase] | None = None
+        self.best_extra_payload: Dict[str, Any] | None = None
 
         self.evaluator = evaluator
         self.validation_rounds_interval = validation_rounds_interval
@@ -147,7 +154,11 @@ class BaseFederatedServer:
         """
         Train the federated model for a given number of rounds.
         If validation is enabled, run validation at the specified interval.
-        If early stopping is enabled, stop training when the early stopping criteria is met.
+        If early stopping is enabled, stop training when the early stopping
+        criteria is met, and keep a scoring snapshot at the best validation
+        round (``best_global_parameters``, ``best_client_states``,
+        ``best_extra_payload``, ``early_stopping_best_round``). Test
+        evaluation is the caller's job and should use that snapshot.
         """
 
         # Run before training callbacks
@@ -533,6 +544,34 @@ class BaseFederatedServer:
     def _on_round_end_server(self):
         pass
 
+    def _snapshot_best_state(self, current_round: int) -> None:
+        """Deep-copy scoring inputs at the current best validation round.
+
+        Live ``global_parameters``, ``client_states`` and ``extra_payload``
+        continue to be updated in later rounds. Test evaluation after
+        ``run()`` must use these copies so it scores the best validation
+        round rather than the stop round.
+
+        Parameters
+        ----------
+        current_round : int
+            Round whose validation metric just became the best so far.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Called from ``_early_stopping_with_patience`` on improvement::
+
+            self._snapshot_best_state(current_round)
+        """
+        self.early_stopping_best_round = current_round
+        self.best_global_parameters = copy.deepcopy(self.global_parameters)
+        self.best_client_states = copy.deepcopy(self.client_states)
+        self.best_extra_payload = copy.deepcopy(self.extra_payload)
+
     def _early_stopping(self, current_round: int,):
         if self.early_stopping_custom:
              return self.early_stopping_callback(current_round, self.early_stopping_parameters, self)
@@ -541,7 +580,7 @@ class BaseFederatedServer:
 
     def _initialize_early_stopping(self):
         if not self.early_stopping_custom:
-            self.early_stopping_best_round = 0
+            self.early_stopping_best_round = None
             self._early_stopping_patience = 0
 
             if self.early_stopping_parameters is None:
@@ -587,6 +626,7 @@ class BaseFederatedServer:
                 logger.info(f"Early stopping patience reset at round {current_round}")
             self._early_stopping_patience = 0
             self.early_stopping_best_result = current_value
+            self._snapshot_best_state(current_round)
         else:
             # No sufficient improvement: increase patience counter.
             self._early_stopping_patience += 1

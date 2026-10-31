@@ -66,10 +66,10 @@ server = FedNCF(
 server.run()
 
 print(evaluator.evaluate(
-    current_round=server.current_round,
-    global_parameters=server.global_parameters,
-    client_states=server.client_states,
-    extra_payload=server.extra_payload,
+    current_round=server.early_stopping_best_round,
+    global_parameters=server.best_global_parameters,
+    client_states=server.best_client_states,
+    extra_payload=server.best_extra_payload,
     split="test",
 ))
 ```
