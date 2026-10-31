@@ -72,10 +72,23 @@ class NeuralCollaborativeFiltering(nn.Module):
         self.output_logits.weight.data.copy_(W)
 
     def forward(self, x, gmf_user_table, mlp_user_table):
-        """Forward pass.
+        """Return preference logits for each (user, item) pair.
 
-        x has shape (batch, 2) with columns [user_local_id, item_id].
-        ``gmf_user_table`` / ``mlp_user_table`` are (n_local_users, dim) tensors.
+        The paper's sigmoid sits in BCE-with-logits on the client, not
+        here, so ranking scores stay unbounded. Order is identical to
+        sigmoid probabilities.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Shape ``(batch, 2)`` with columns ``[user_local_id, item_id]``.
+        gmf_user_table, mlp_user_table : torch.Tensor
+            Client-resident user tables, shape ``(n_local_users, dim)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Logits of shape ``(batch,)``.
         """
         user_id, item_id = x[:, 0], x[:, 1]
         gmf_product = F.embedding(user_id, gmf_user_table) * self.gmf_item_embeddings(item_id)

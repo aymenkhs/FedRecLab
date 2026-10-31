@@ -10,6 +10,10 @@ are handled by the base class through the ParamIO / aggregation system.
 No hooks (_on_round_start_server, _on_round_end_server, etc.) are
 needed because FedNCF has no custom per-round server logic.
 
+Training protocol lives on the client: paper default is implicit binary
+labels and BCE (FedNCFClientAlgorithm). Rating-valued MSE is an opt-in
+deviation, not the KBS experiments.
+
 Faithful aggregation: ``SimpleAvg`` on ``item_embeddings`` (uniform mean
 over the clients that updated each item; Algorithm 1 / MF-FedAvg). Neural
 groups (``shared_layers``, ``output_weights``) use ordinary dense FedAvg
@@ -25,6 +29,12 @@ Simulation shortcuts:
   relies on negative-item updates being visible to the server;
   ``item_upload_include_negatives`` on the client includes negatives in
   the upload.
+
+Deviations from the paper:
+  Labels and loss follow §4.2 (implicit binary targets, BCE, four
+  negatives). ``predictive_factor=32``, ``lr=5e-4`` and ``local_epochs=5``
+  on the client are the public-code defaults, not the paper's D=12,
+  Adam 0.001 and two local epochs.
 """
 
 from src.fedreclab.federated.base_server import BaseFederatedServer

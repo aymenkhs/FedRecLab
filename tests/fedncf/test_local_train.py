@@ -73,7 +73,7 @@ def test_persist_all_moments_matches_a_module_that_owns_user_tables(
             samples_y[start : start + client.batch_size], dtype=torch.float32
         )
         preds = owned(bx)
-        loss = torch.nn.functional.mse_loss(preds, by)
+        loss = client._compute_loss(preds, by)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()

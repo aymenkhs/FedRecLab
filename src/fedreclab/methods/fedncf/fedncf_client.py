@@ -7,6 +7,17 @@ ClientState holds only client-resident tensors (the two user embedding tables)
 plus a name-keyed optimiser dict. The shared NCF skeleton lives on this
 algorithm object and is loaded from the server payload each call.
 
+Training protocol (paper §3.1, §4.1–4.2):
+  Observed interactions are implicit positives (label 1) regardless of the
+  raw rating. Four negatives (label 0) are sampled per positive. The client
+  optimises BCE-with-logits, which is equivalent to the paper's sigmoid
+  prediction head plus BCE. Ranking scores are the logits; order matches
+  sigmoid probabilities.
+
+  ``label_mode="rating"`` with ``loss="mse"`` is a documented deviation:
+  positives keep the raw rating and negatives stay 0. That is explicit
+  rating prediction under a ranking evaluator, not the KBS protocol.
+
 optimizer_state_scope:
   - "client_resident" (default): persist Adam moments for user tables only
   - "none": no optimiser state is kept
@@ -49,10 +60,57 @@ _CLIENT_TENSOR_NAMES = (
     "mlp_user_embeddings.weight",
 )
 _OPTIMIZER_STATE_SCOPES = ("client_resident", "none", "all")
+_LABEL_MODES = ("binary", "rating")
+_LOSSES = ("bce", "mse")
 _ALL_SCOPE_WARN_BYTES = 1 << 30
 
 
 class FedNCFClientAlgorithm(BaseClientAlgorithm):
+    """Local training and scoring for Federated NCF.
+
+    Defaults follow the paper: implicit binary labels, BCE, four negatives
+    per positive. Pass ``label_mode="rating"`` and ``loss="mse"`` for the
+    explicit-rating deviation.
+
+    Parameters
+    ----------
+    predictive_factor : int, optional
+        Latent width of the NeuMF skeleton. Default is 32.
+    local_epochs : int, optional
+        Local SGD epochs per round. Default is 5.
+    lr : float, optional
+        Adam learning rate. Default is ``5e-4``.
+    batch_size : int, optional
+        Mini-batch size. Default is 128.
+    neg_samples : int, optional
+        Unobserved items sampled per positive. Default is 4 (paper §4.2).
+    label_mode : {"binary", "rating"}, optional
+        ``"binary"`` (paper) sets every observed interaction to 1.
+        ``"rating"`` keeps the raw rating as the positive target.
+    loss : {"bce", "mse"}, optional
+        ``"bce"`` (paper) is BCE-with-logits. ``"mse"`` is squared error
+        on the logits. ``loss="bce"`` requires ``label_mode="binary"``.
+    optimizer_state_scope : {"client_resident", "none", "all"}, optional
+        Which Adam moments to persist in ``ClientState``. Default is
+        ``"client_resident"``.
+    item_upload_include_negatives : bool, optional
+        If True, row-layout item uploads include negatives sampled this
+        round. Default is False (Algorithm 2, P = O).
+
+    Raises
+    ------
+    ValueError
+        If ``optimizer_state_scope``, ``label_mode``, or ``loss`` is
+        unknown, or if BCE is paired with rating-valued labels.
+
+    Examples
+    --------
+    >>> client = FedNCFClientAlgorithm()
+    >>> client.label_mode, client.loss, client.neg_samples
+    ('binary', 'bce', 4)
+    >>> FedNCFClientAlgorithm(label_mode="rating", loss="mse").loss
+    'mse'
+    """
 
     def __init__(
         self,
@@ -60,7 +118,9 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         local_epochs: int = 5,
         lr: float = 5e-4,
         batch_size: int = 128,
-        neg_samples: int = 3,
+        neg_samples: int = 4,
+        label_mode: str = "binary",
+        loss: str = "bce",
         optimizer_state_scope: str = "client_resident",
         item_upload_include_negatives: bool = False,
     ):
@@ -70,11 +130,24 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
                 f"optimizer_state_scope must be one of {_OPTIMIZER_STATE_SCOPES}, "
                 f"got {optimizer_state_scope!r}"
             )
+        if label_mode not in _LABEL_MODES:
+            raise ValueError(
+                f"label_mode must be one of {_LABEL_MODES}, got {label_mode!r}"
+            )
+        if loss not in _LOSSES:
+            raise ValueError(f"loss must be one of {_LOSSES}, got {loss!r}")
+        if loss == "bce" and label_mode != "binary":
+            raise ValueError(
+                "loss='bce' requires label_mode='binary'; rating-valued "
+                "targets are outside [0, 1]. Use loss='mse' for explicit ratings."
+            )
         self.predictive_factor = predictive_factor
         self.local_epochs = local_epochs
         self.lr = lr
         self.batch_size = batch_size
         self.neg_samples = neg_samples
+        self.label_mode = label_mode
+        self.loss = loss
         self.optimizer_state_scope = optimizer_state_scope
         self.item_upload_include_negatives = bool(item_upload_include_negatives)
         self.num_items = None
@@ -187,7 +260,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
                 by = torch.tensor(samples_y[start:start + self.batch_size], dtype=torch.float32, device=device)
 
                 preds = model(bx, gmf_user, mlp_user)
-                loss = torch.nn.functional.mse_loss(preds, by)
+                loss = self._compute_loss(preds, by)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -258,8 +331,41 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
     ):
         """Build one epoch of training samples (positives + negatives).
 
-        For each positive interaction, self.neg_samples random items that the
-        user has NOT interacted with are sampled as negatives (label=0).
+        For each positive interaction, ``self.neg_samples`` random items that
+        the user has not interacted with are sampled as negatives (label 0).
+        Positive labels are 1 under ``label_mode="binary"`` and the raw
+        rating under ``label_mode="rating"``.
+
+        Parameters
+        ----------
+        pos_local_uids : ndarray
+            Local user indices of observed interactions, shape ``(n_pos,)``.
+        pos_item_ids : ndarray
+            Item ids of observed interactions, shape ``(n_pos,)``.
+        pos_ratings : ndarray
+            Raw ratings aligned with the positives. Ignored when
+            ``label_mode="binary"``.
+        user_pos_items : dict of int to set
+            Observed item ids per local user, used to reject sampled
+            negatives that are actually positives.
+        rng : numpy.random.Generator or None
+            Seeded generator. ``None`` falls back to global ``np.random``.
+
+        Returns
+        -------
+        samples_x : ndarray
+            User–item index pairs, shape ``(n_pos * (1 + neg_samples), 2)``.
+        samples_y : ndarray
+            Training targets, shape ``(n_pos * (1 + neg_samples),)``.
+
+        Examples
+        --------
+        >>> client = FedNCFClientAlgorithm(neg_samples=0, predictive_factor=4)
+        >>> client.num_items = 5
+        >>> x, y = client._build_epoch_samples(
+        ...     np.array([0]), np.array([1]), np.array([4.0]), {0: {1}}, None)
+        >>> y
+        array([1.], dtype=float32)
         """
         n_pos = len(pos_local_uids)
         n_total = n_pos * (1 + self.neg_samples)
@@ -271,10 +377,10 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         for i in range(n_pos):
             local_uid = pos_local_uids[i]
             pos_item = pos_item_ids[i]
-            rating = pos_ratings[i]
+            pos_label = 1.0 if self.label_mode == "binary" else float(pos_ratings[i])
 
             samples_x[idx] = [local_uid, pos_item]
-            samples_y[idx] = rating
+            samples_y[idx] = pos_label
             idx += 1
 
             excl = user_pos_items.get(local_uid, set())
@@ -288,6 +394,39 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
                 idx += 1
 
         return samples_x[:idx], samples_y[:idx]
+
+    def _compute_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Return the configured training loss.
+
+        Parameters
+        ----------
+        preds : torch.Tensor
+            Model logits, shape ``(batch,)``.
+        targets : torch.Tensor
+            Training labels, shape ``(batch,)``. Under ``loss="bce"`` these
+            are 0/1; under ``loss="mse"`` they may be ratings.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar mean loss.
+
+        Raises
+        ------
+        RuntimeError
+            If ``self.loss`` is not ``"bce"`` or ``"mse"``. The constructor
+            already rejects unknown names, so this is a guard.
+
+        Examples
+        --------
+        >>> # doctest: +SKIP
+        >>> client._compute_loss(logits, labels)
+        """
+        if self.loss == "bce":
+            return torch.nn.functional.binary_cross_entropy_with_logits(preds, targets)
+        if self.loss == "mse":
+            return torch.nn.functional.mse_loss(preds, targets)
+        raise RuntimeError(f"unrecognised loss {self.loss!r}")
 
     def compute_scores(
         self,
@@ -319,7 +458,8 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         Returns
         -------
         dict of int to ndarray
-            Predicted scores per user, aligned with that user's candidates.
+            Preference logits per user, aligned with that user's candidates.
+            Ranking order matches a sigmoid head.
 
         Examples
         --------

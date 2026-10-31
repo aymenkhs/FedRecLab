@@ -48,7 +48,7 @@ dataset = load_cornac_dataset(
 )
 
 client = FedNCFClientAlgorithm(predictive_factor=32, local_epochs=5, lr=5e-4,
-                               batch_size=128, neg_samples=3)
+                               batch_size=128, neg_samples=4)
 evaluator = FullRankingEvaluator(metrics=["ndcg", "hr"], topk=10,
                                  interaction_dataset=dataset, client_algorithm=client)
 
