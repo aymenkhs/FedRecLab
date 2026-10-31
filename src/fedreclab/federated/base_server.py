@@ -62,6 +62,11 @@ class BaseFederatedServer:
 
         self.evaluator = evaluator
         self.validation_rounds_interval = validation_rounds_interval
+        if self.early_stopping and not self.early_stopping_custom and self.evaluator is None:
+            raise ValueError(
+                "early_stopping=True requires an evaluator so patience can "
+                "read a validation metric."
+            )
 
         # Parse Client selection strategy
         if isinstance(client_selection_strategy, BaseClientSelection):
@@ -603,12 +608,75 @@ class BaseFederatedServer:
             else:
                 self.early_stopping_best_result = float('-inf')
 
+    def _early_stopping_metric_value(self) -> float:
+        """Return the monitored validation metric as a comparable scalar.
+
+        Looks up ``early_stopping_parameters["metric"]`` in
+        ``current_metrics``. Top-K names are stored as ``"{name}@{k}"``.
+        If the entry is a confidence-interval dict, the ``mean`` is used.
+
+        Returns
+        -------
+        float
+            Scalar used for patience comparison.
+
+        Raises
+        ------
+        KeyError
+            If the configured metric is not in the validation results.
+        TypeError
+            If the stored value is not a scalar (or a CI dict with ``mean``).
+        ValueError
+            If the scalar is not finite.
+
+        Examples
+        --------
+        After validation with ``current_metrics["ndcg@10"] == 0.4`` and
+        ``early_stopping_parameters["metric"] == "ndcg@10"``, this returns
+        ``0.4``. A CI entry ``{"mean": 0.4, ...}`` also returns ``0.4``.
+        """
+        metric_name = self.early_stopping_parameters["metric"]
+        metrics = getattr(self, "current_metrics", None)
+        if metrics is None:
+            raise RuntimeError(
+                "Early stopping ran without validation metrics. Pass an "
+                "evaluator and validate before checking patience."
+            )
+        if metric_name not in metrics:
+            available = sorted(metrics)
+            raise KeyError(
+                f"Early stopping metric {metric_name!r} is not in the "
+                f"validation results {available}. Top-K metrics are stored "
+                f"as '{{name}}@{{k}}' (for example 'ndcg@10')."
+            )
+        value = metrics[metric_name]
+        if isinstance(value, dict):
+            if "mean" not in value:
+                raise TypeError(
+                    f"Early stopping metric {metric_name!r} is a dict without "
+                    f"'mean' (got keys {sorted(value)}). When "
+                    "compute_confidence_intervals=True, the mean is used."
+                )
+            value = value["mean"]
+        try:
+            scalar = float(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"Early stopping metric {metric_name!r} must be a scalar, "
+                f"got {type(value).__name__}: {value!r}"
+            ) from exc
+        if not np.isfinite(scalar):
+            raise ValueError(
+                f"Early stopping metric {metric_name!r} is not finite: {scalar}"
+            )
+        return scalar
+
     def _early_stopping_with_patience(self, current_round: int):
         metric_name = self.early_stopping_parameters["metric"]
         direction = self.early_stopping_parameters["direction"]
         threshold = self.early_stopping_parameters["threshold"]
 
-        current_value = self.current_metrics[metric_name]
+        current_value = self._early_stopping_metric_value()
         best_value = self.early_stopping_best_result
 
         # Determine whether the monitored metric has improved by more than
