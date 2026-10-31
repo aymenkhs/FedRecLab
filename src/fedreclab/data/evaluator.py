@@ -145,7 +145,9 @@ class FullRankingEvaluator(Evaluator):
     or the positives would be dropped from the ranking.
 
     The catalogue is every item in ``interaction_dataset.interaction_data``,
-    including items that never appear in train.
+    including items that never appear in train. Candidate arrays are built
+    during ``evaluate()`` for users who have interactions in that split;
+    they are not stored for the whole user set.
     """
 
     _VALID_EXCLUDE_SPLITS = frozenset({"train", "val", "test"})
@@ -205,10 +207,6 @@ class FullRankingEvaluator(Evaluator):
         self.exclude_on_val = self._normalize_exclude(exclude_on_val, eval_split="val")
         self.exclude_on_test = self._normalize_exclude(exclude_on_test, eval_split="test")
         self.full_item_list = self.interaction_dataset.interaction_data['item_id'].unique()
-        self.user_candidate_items = {
-            "val": self._precompute_candidates(self.exclude_on_val),
-            "test": self._precompute_candidates(self.exclude_on_test),
-        }
 
     def _normalize_exclude(self, exclude: Sequence[str], eval_split: str) -> tuple[str, ...]:
         """Validate and freeze an exclusion list for one eval split.
@@ -296,32 +294,31 @@ class FullRankingEvaluator(Evaluator):
         )
         return view.loc[view["user_id"] == user_id, "item_id"].unique()
 
-    def _precompute_candidates(self, exclude_splits: tuple[str, ...]) -> Dict[int, np.ndarray]:
-        """Candidate items per user for one exclusion set.
+    def _candidate_items(self, user_id: int, exclude_splits: tuple[str, ...]) -> np.ndarray:
+        """Catalogue minus this user's items from ``exclude_splits``.
 
         Parameters
         ----------
+        user_id : int
+            Remapped user id.
         exclude_splits : tuple of str
             Passed to ``_items_to_exclude``.
 
         Returns
         -------
-        dict of int to ndarray
-            ``user_id -> catalogue minus excluded items``.
+        ndarray
+            Item ids to score for this user.
 
         Examples
         --------
         >>> # doctest: +SKIP
-        >>> evaluator._precompute_candidates(("train",))
-        {0: array([2, 3]), 1: array([0, 4])}
+        >>> evaluator._candidate_items(0, ("train",))
+        array([2, 3, 5])
         """
-        return {
-            user_id: np.setdiff1d(
-                self.full_item_list,
-                self._items_to_exclude(user_id, exclude_splits),
-            )
-            for user_id in self.interaction_dataset.interaction_data["user_id"].unique()
-        }
+        return np.setdiff1d(
+            self.full_item_list,
+            self._items_to_exclude(user_id, exclude_splits),
+        )
 
     def evaluate(
         self,
@@ -333,8 +330,10 @@ class FullRankingEvaluator(Evaluator):
     ) -> Dict[str, Any]:
         if split == "test":
             evaluation_data = self.interaction_dataset.test_interactions
+            exclude_splits = self.exclude_on_test
         elif split == "val":
             evaluation_data = self.interaction_dataset.val_interactions
+            exclude_splits = self.exclude_on_val
         else:
             raise ValueError(f"Invalid split: {split}")
 
@@ -345,8 +344,24 @@ class FullRankingEvaluator(Evaluator):
 
             client_eval_interactions = evaluation_data[evaluation_data['client_id'] == client_id]
             users_in_client = self.interaction_dataset.client_partition.client_ids_2_user_ids[client_id]
+
+            eval_items_per_user = {}
+            for user_id in users_in_client:
+                eval_interactions_user = client_eval_interactions[
+                    client_eval_interactions['user_id'] == user_id
+                ]
+                if "rating" in eval_interactions_user.columns and self.threshold_rating > 0.0:
+                    eval_interactions_user = eval_interactions_user[eval_interactions_user['rating'] >= self.threshold_rating]
+                if len(eval_interactions_user) == 0:
+                    continue
+                eval_items_per_user[user_id] = eval_interactions_user['item_id'].unique()
+
+            if not eval_items_per_user:
+                continue
+
             candidate_items_per_user = {
-                user_id: self.user_candidate_items[split][user_id] for user_id in users_in_client
+                user_id: self._candidate_items(user_id, exclude_splits)
+                for user_id in eval_items_per_user
             }
 
             scores, loss = self.client_algorithm.compute_scores(
@@ -358,16 +373,7 @@ class FullRankingEvaluator(Evaluator):
             )
             losses.append(loss)
 
-            for user_id in users_in_client:
-                eval_interactions_user = client_eval_interactions[
-                    client_eval_interactions['user_id'] == user_id
-                ]
-                if "rating" in eval_interactions_user.columns and self.threshold_rating > 0.0:
-                    eval_interactions_user = eval_interactions_user[eval_interactions_user['rating'] >= self.threshold_rating]                
-                if len(eval_interactions_user) == 0:
-                    continue
-                eval_items = eval_interactions_user['item_id'].unique()
-
+            for user_id, eval_items in eval_items_per_user.items():
                 candidate_items = candidate_items_per_user[user_id]
                 user_scores = scores[user_id]
                 rank_positions = np.argsort(-user_scores)
