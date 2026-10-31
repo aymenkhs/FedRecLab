@@ -40,8 +40,7 @@ def test_persist_all_moments_matches_a_module_that_owns_user_tables(
     }
     payload0 = _clone_groups(request.global_payload)
 
-    np.random.seed(0)
-    torch.manual_seed(0)
+    request.seed = 0
     new_resp = client.local_train(request)
 
     backbone = NeuralCollaborativeFiltering(num_items=6, predictive_factor=8)
@@ -58,12 +57,11 @@ def test_persist_all_moments_matches_a_module_that_owns_user_tables(
     pos_items = np.array([1, 2])
     pos_ratings = np.array([1.0, 0.5], dtype=np.float32)
     user_pos = {0: {1, 2}}
-    np.random.seed(0)
-    torch.manual_seed(0)
+    rng = np.random.default_rng([request.seed, request.client_id, request.current_round])
     samples_x, samples_y = client._build_epoch_samples(
-        pos_local, pos_items, pos_ratings, user_pos
+        pos_local, pos_items, pos_ratings, user_pos, rng
     )
-    perm = np.random.permutation(len(samples_x))
+    perm = rng.permutation(len(samples_x))
     samples_x, samples_y = samples_x[perm], samples_y[perm]
 
     owned.train()

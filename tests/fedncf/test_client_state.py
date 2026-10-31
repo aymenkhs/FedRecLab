@@ -16,6 +16,13 @@ from src.fedreclab.federated.utils import (
 from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
 
 
+def test_local_train_runs_without_a_seed(fedncf_client_and_request):
+    client, request = fedncf_client_and_request()
+    assert request.seed is None
+    resp = client.local_train(request)
+    assert len(resp.training_losses) == 1
+
+
 def test_local_train_does_not_store_the_module(fedncf_client_and_request):
     client, request = fedncf_client_and_request()
     resp = client.local_train(request)
@@ -67,6 +74,7 @@ def test_item_table_moments_are_not_restored_on_the_next_round(
         global_payload=request.global_payload,
         training_data=request.training_data,
         param_ios=request.param_ios,
+        seed=request.seed,
     )
     resp2 = client.local_train(request2)
     assert "gmf_item_embeddings.weight" not in (
