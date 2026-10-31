@@ -36,7 +36,6 @@ class Evaluator:
         compute_confidence_intervals: bool = False,
         confidence_interval_alpha: float = 0.05,
         logging_callback: Callable | None = None,
-        eval_mode: str = "server_side",
         verbose: bool = True,
     ):
         self.metrics = metrics
@@ -51,7 +50,6 @@ class Evaluator:
         self.confidence_interval_alpha = confidence_interval_alpha
         
         self.logging_callback = logging_callback
-        self.eval_mode = eval_mode
         self.verbose = verbose
 
     def evaluate(
@@ -161,7 +159,6 @@ class FullRankingEvaluator(Evaluator):
         compute_confidence_intervals: bool = False,
         confidence_interval_alpha: float = 0.05,
         logging_callback: Callable | None = None,
-        eval_mode: str = "server_side",
         verbose: bool = True,
         threshold_rating: float = 0.0,
         exclude_on_val: Sequence[str] = ("train",),
@@ -184,8 +181,6 @@ class FullRankingEvaluator(Evaluator):
             Two-sided significance level for the CI.
         logging_callback : callable or None, optional
             ``callback(round, metrics, split, extra_payload)``.
-        eval_mode : str, optional
-            Forwarded to ``Evaluator``.
         verbose : bool, optional
             Forwarded to ``Evaluator``.
         threshold_rating : float, optional
@@ -204,7 +199,7 @@ class FullRankingEvaluator(Evaluator):
             If an exclusion name is not a known split, or if an eval split
             excludes itself (positives would leave the candidate list).
         """
-        super().__init__(metrics, topk, interaction_dataset, client_algorithm, compute_confidence_intervals, confidence_interval_alpha, logging_callback, eval_mode, verbose)
+        super().__init__(metrics, topk, interaction_dataset, client_algorithm, compute_confidence_intervals, confidence_interval_alpha, logging_callback, verbose)
 
         self.threshold_rating = threshold_rating
         self.exclude_on_val = self._normalize_exclude(exclude_on_val, eval_split="val")
