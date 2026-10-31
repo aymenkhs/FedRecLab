@@ -99,5 +99,12 @@ def test_persist_all_moments_matches_a_module_that_owns_user_tables(
     )
     new_items = new_resp.updates_packages["item_embeddings"].param_value
     ref_items = owned.backbone.get_server_state_groups()["item_embeddings"]
-    for key in new_items:
-        torch.testing.assert_close(new_items[key], ref_items[key], atol=1e-6, rtol=1e-6)
+    rows = torch.as_tensor(new_items["rows"], dtype=torch.long)
+    np.testing.assert_array_equal(np.sort(rows.numpy()), np.array([1, 2]))
+    for key, uploaded in new_items["values"].items():
+        torch.testing.assert_close(
+            torch.as_tensor(uploaded),
+            ref_items[key][rows],
+            atol=1e-6,
+            rtol=1e-6,
+        )

@@ -64,10 +64,9 @@ def test_item_table_moments_are_not_restored_on_the_next_round(
         current_round=1,
         users_in_client=[0],
         client_state=resp1.updated_client_state,
-        global_payload={
-            name: pkg.param_value for name, pkg in resp1.updates_packages.items()
-        },
+        global_payload=request.global_payload,
         training_data=request.training_data,
+        param_ios=request.param_ios,
     )
     resp2 = client.local_train(request2)
     assert "gmf_item_embeddings.weight" not in (

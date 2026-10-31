@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 
 from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from src.fedreclab.methods.fedpergnn.fedpergnn import default_param_ios
 from src.fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
 
 
@@ -45,9 +46,11 @@ def test_local_train_uses_client_state_row_not_the_server_table():
         users_in_client=[0],
         client_state=state,
         global_payload={
-            "model_state": client._skeleton.get_server_state(),
+            "model_state": client._skeleton.get_model_state(),
+            "item_embeddings": client._skeleton.get_item_embeddings(),
             "user_embeddings": server_table,
         },
+        param_ios=default_param_ios(),
         training_data=pd.DataFrame(
             {"user_id": [0], "item_id": [1], "rating": [1.0]}
         ),
@@ -67,8 +70,8 @@ def test_local_train_uses_client_state_row_not_the_server_table():
 
     assert "model" not in resp.updated_client_state.local_parameters
     uploaded = resp.updates_packages["user_embeddings"].param_value
-    assert uploaded["user_ids"][0] == 0
-    assert not np.allclose(uploaded["embeddings"][0], -0.5)
+    assert uploaded["rows"][0] == 0
+    assert not np.allclose(uploaded["values"][0], -0.5)
 
     keys = set(resp.updated_client_state.optimizer_state or {})
     assert keys <= {"user_embedding.weight"}

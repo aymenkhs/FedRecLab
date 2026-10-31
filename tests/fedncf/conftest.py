@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from src.fedreclab.methods.fedncf.fedncf import default_param_ios
 from src.fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
 
 
@@ -53,6 +54,7 @@ def fedncf_client_and_request():
             client_state=state,
             global_payload=payload,
             training_data=data,
+            param_ios=default_param_ios(),
         )
         return client, request
 

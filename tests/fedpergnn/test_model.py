@@ -13,5 +13,7 @@ def test_history_with_neighbors_is_in_the_server_state():
     state = model.get_server_state()
     assert "history_with_neighbors.weight" in state
     assert "history_with_neighbors.bias" in state
+    assert "item_embeddings.weight" in state
+    assert "item_embeddings.weight" not in model.get_model_state()
     assert "user_embedding.weight" not in state
     assert_skeleton_server_coverage(model, state)
