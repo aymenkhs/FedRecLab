@@ -40,11 +40,15 @@ class BaseFederatedServer:
         training_framework: str = "torch",
         device: str | None = None,
         param_io_overrides: Dict[str, dict] | None = None,
+        seed: int | None = None,
     ):
         self.interaction_dataset = interaction_dataset
 
         self.num_clients = interaction_dataset.num_clients
         self.num_rounds = num_rounds
+        self.seed = seed
+        if seed is not None:
+            torch.manual_seed(seed)
 
         self.client_algorithm = client_algorithm
 
@@ -75,6 +79,8 @@ class BaseFederatedServer:
         # Parse Client selection strategy
         if isinstance(client_selection_strategy, BaseClientSelection):
             self.client_selection_module = client_selection_strategy
+            if self.client_selection_module.seed is None:
+                self.client_selection_module.seed = self.seed
         else:
             raise ValueError(f"Invalid client selection strategy: {client_selection_strategy}")
 
@@ -206,7 +212,7 @@ class BaseFederatedServer:
         self.__aggregation_round_callback(on_round_start=True)
 
         # Select clients
-        selected_client_ids = self.client_selection_module.select()
+        selected_client_ids = self.client_selection_module.select(self.current_round)
         self.selected_client_ids = selected_client_ids
         self._post_selection_callback()
 
@@ -247,6 +253,7 @@ class BaseFederatedServer:
             global_payload=self._build_server_payload(client_id=client_id),
             extra_payload=self.extra_payload,
             param_ios=self.param_ios,
+            seed=self.seed,
         )
         training_response = self.client_algorithm.local_train(training_request)
         client_state = training_response.updated_client_state

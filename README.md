@@ -57,6 +57,7 @@ server = FedNCF(
     interaction_dataset=dataset,
     client_algorithm=client,
     num_rounds=100,
+    seed=42,
     client_selection_strategy=RandomClientSelection(dataset.num_clients, 0.02, "frac"),
     aggregation_strategies={
         "item_embeddings": SimpleAvg(num_clients=dataset.num_clients),

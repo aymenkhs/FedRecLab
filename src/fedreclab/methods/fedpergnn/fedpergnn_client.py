@@ -158,10 +158,19 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         num_examples = len(item_ids_np)
         all_losses: List[float] = []
         num_training_examples = 0
+        if training_request.seed is None:
+            rng = None
+        else:
+            rng = np.random.default_rng(
+                [training_request.seed, training_request.client_id, training_request.current_round]
+            )
 
         for _ in range(self.local_epochs):
             indices = np.arange(num_examples)
-            np.random.shuffle(indices)
+            if rng is None:
+                np.random.shuffle(indices)
+            else:
+                rng.shuffle(indices)
 
             item_ids_np_shuffled = item_ids_np[indices]
             ratings_np_shuffled = ratings_np[indices]

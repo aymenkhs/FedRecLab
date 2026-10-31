@@ -160,16 +160,22 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         all_losses: List[float] = []
         num_training_examples = 0
         touched_items = set(int(i) for i in pos_item_ids)
+        if training_request.seed is None:
+            rng = None
+        else:
+            rng = np.random.default_rng(
+                [training_request.seed, training_request.client_id, training_request.current_round]
+            )
 
         for _ in range(self.local_epochs):
             samples_x, samples_y = self._build_epoch_samples(
-                pos_local_uids, pos_item_ids, pos_ratings, user_pos_items,
+                pos_local_uids, pos_item_ids, pos_ratings, user_pos_items, rng,
             )
             num_training_examples += len(samples_x)
             if self.item_upload_include_negatives:
                 touched_items.update(int(i) for i in samples_x[:, 1])
 
-            perm = np.random.permutation(len(samples_x))
+            perm = np.random.permutation(len(samples_x)) if rng is None else rng.permutation(len(samples_x))
             samples_x = samples_x[perm]
             samples_y = samples_y[perm]
 
@@ -248,6 +254,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         pos_item_ids: np.ndarray,
         pos_ratings: np.ndarray,
         user_pos_items: Dict[int, set],
+        rng: np.random.Generator | None,
     ):
         """Build one epoch of training samples (positives + negatives).
 
@@ -271,10 +278,11 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
             idx += 1
 
             excl = user_pos_items.get(local_uid, set())
+            draw = np.random.randint if rng is None else rng.integers
             for _ in range(self.neg_samples):
-                neg_item = np.random.randint(0, self.num_items)
+                neg_item = int(draw(0, self.num_items))
                 while neg_item in excl:
-                    neg_item = np.random.randint(0, self.num_items)
+                    neg_item = int(draw(0, self.num_items))
                 samples_x[idx] = [local_uid, neg_item]
                 samples_y[idx] = 0.0
                 idx += 1

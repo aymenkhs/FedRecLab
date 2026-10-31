@@ -30,6 +30,7 @@ class ClientTrainingRequest:
     # from this and copy the objects into UpdatePackage; they do not build
     # their own ParamIO.
     param_ios: Dict[str, ParamIO] | None = None
+    seed: int | None = None
 
 
 @dataclass
