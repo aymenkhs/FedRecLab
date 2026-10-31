@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -103,6 +103,27 @@ class Evaluator:
 
 
 class FullRankingEvaluator(Evaluator):
+    """Full-ranking evaluator: every catalogue item except a configured exclusion set.
+
+    Protocol
+    --------
+    Candidates are ``all items in the dataset minus the user's items from the
+    excluded splits``. The exclusion set is **per eval split**:
+
+    * validation (``split="val"``): exclude train only, by default.
+    * test (``split="test"``): exclude train and validation, by default.
+
+    Validation items are therefore not treated as test negatives. Pass
+    ``exclude_on_test=("train",)`` to restore the older “exclude train only”
+    convention. The eval split itself must not appear in its exclusion set,
+    or the positives would be dropped from the ranking.
+
+    The catalogue is every item in ``interaction_dataset.interaction_data``,
+    including items that never appear in train.
+    """
+
+    _VALID_EXCLUDE_SPLITS = frozenset({"train", "val", "test"})
+
     def __init__(
         self,
         metrics: List[str],
@@ -115,22 +136,169 @@ class FullRankingEvaluator(Evaluator):
         eval_mode: str = "server_side",
         verbose: bool = True,
         threshold_rating: float = 0.0,
+        exclude_on_val: Sequence[str] = ("train",),
+        exclude_on_test: Sequence[str] = ("train", "val"),
     ):
+        """
+        Parameters
+        ----------
+        metrics : list of str
+            Ranking metric names (see ``Evaluator.TOPK_METRIC_CLASSES``).
+        topk : int or list of int
+            Cut-offs for top-k metrics.
+        interaction_dataset : InteractionDataset
+            Split and partitioned interactions.
+        client_algorithm : BaseClientAlgorithm
+            Used for ``compute_scores``.
+        compute_confidence_intervals : bool, optional
+            If True, aggregate per-user metrics as mean ± CI.
+        confidence_interval_alpha : float, optional
+            Two-sided significance level for the CI.
+        logging_callback : callable or None, optional
+            ``callback(round, metrics, split, extra_payload)``.
+        eval_mode : str, optional
+            Forwarded to ``Evaluator``.
+        verbose : bool, optional
+            Forwarded to ``Evaluator``.
+        threshold_rating : float, optional
+            If greater than 0, keep only eval interactions with
+            ``rating >= threshold_rating``.
+        exclude_on_val : sequence of {"train", "val", "test"}, optional
+            Splits whose items are removed from candidates when
+            ``evaluate(..., split="val")``. Default ``("train",)``.
+        exclude_on_test : sequence of {"train", "val", "test"}, optional
+            Splits whose items are removed from candidates when
+            ``evaluate(..., split="test")``. Default ``("train", "val")``.
+
+        Raises
+        ------
+        ValueError
+            If an exclusion name is not a known split, or if an eval split
+            excludes itself (positives would leave the candidate list).
+        """
         super().__init__(metrics, topk, interaction_dataset, client_algorithm, compute_confidence_intervals, confidence_interval_alpha, logging_callback, eval_mode, verbose)
-        
+
+        self.threshold_rating = threshold_rating
+        self.exclude_on_val = self._normalize_exclude(exclude_on_val, eval_split="val")
+        self.exclude_on_test = self._normalize_exclude(exclude_on_test, eval_split="test")
         self.full_item_list = self.interaction_dataset.interaction_data['item_id'].unique()
         self.user_candidate_items = {
+            "val": self._precompute_candidates(self.exclude_on_val),
+            "test": self._precompute_candidates(self.exclude_on_test),
+        }
+
+    def _normalize_exclude(self, exclude: Sequence[str], eval_split: str) -> tuple[str, ...]:
+        """Validate and freeze an exclusion list for one eval split.
+
+        Parameters
+        ----------
+        exclude : sequence of str
+            Split names whose items should leave the candidate list.
+        eval_split : {"val", "test"}
+            Split that will be ranked against those candidates.
+
+        Returns
+        -------
+        tuple of str
+            Deduplicated exclusion names, order preserved.
+
+        Raises
+        ------
+        ValueError
+            If a name is not ``train``/``val``/``test``, or equals ``eval_split``.
+
+        Examples
+        --------
+        >>> # doctest: +SKIP
+        >>> evaluator._normalize_exclude(("train", "val"), eval_split="test")
+        ('train', 'val')
+        """
+        seen = set()
+        normalized = []
+        for name in exclude:
+            if name not in self._VALID_EXCLUDE_SPLITS:
+                raise ValueError(
+                    f"Invalid exclusion split {name!r}. "
+                    f"Expected one of {sorted(self._VALID_EXCLUDE_SPLITS)}."
+                )
+            if name == eval_split:
+                raise ValueError(
+                    f"Cannot exclude {eval_split!r} items when evaluating "
+                    f"{eval_split}: they are the ranking positives."
+                )
+            if name not in seen:
+                seen.add(name)
+                normalized.append(name)
+        return tuple(normalized)
+
+    def _items_to_exclude(self, user_id: int, exclude_splits: tuple[str, ...]) -> np.ndarray:
+        """Item IDs of ``user_id`` that belong to any split in ``exclude_splits``.
+
+        Parameters
+        ----------
+        user_id : int
+            Remapped user id.
+        exclude_splits : tuple of str
+            Subset of ``{"train", "val", "test"}``. Splits not present on
+            the dataset are ignored.
+
+        Returns
+        -------
+        ndarray
+            Unique item ids to drop from that user's candidate list.
+            Empty if nothing is excluded.
+
+        Examples
+        --------
+        >>> # doctest: +SKIP
+        >>> evaluator._items_to_exclude(0, ("train", "val"))
+        array([1, 4, 7])
+        """
+        include_train = "train" in exclude_splits
+        include_validation = (
+            "val" in exclude_splits and self.interaction_dataset.include_validation
+        )
+        include_test = (
+            "test" in exclude_splits and self.interaction_dataset.include_test
+        )
+        if not (include_train or include_validation or include_test):
+            return np.array([], dtype=self.full_item_list.dtype)
+
+        client_id = self.interaction_dataset.client_partition.user_ids_2_client_ids[user_id]
+        view = self.interaction_dataset.get_client_view(
+            client_id=client_id,
+            include_train=include_train,
+            include_validation=include_validation,
+            include_test=include_test,
+        )
+        return view.loc[view["user_id"] == user_id, "item_id"].unique()
+
+    def _precompute_candidates(self, exclude_splits: tuple[str, ...]) -> Dict[int, np.ndarray]:
+        """Candidate items per user for one exclusion set.
+
+        Parameters
+        ----------
+        exclude_splits : tuple of str
+            Passed to ``_items_to_exclude``.
+
+        Returns
+        -------
+        dict of int to ndarray
+            ``user_id -> catalogue minus excluded items``.
+
+        Examples
+        --------
+        >>> # doctest: +SKIP
+        >>> evaluator._precompute_candidates(("train",))
+        {0: array([2, 3]), 1: array([0, 4])}
+        """
+        return {
             user_id: np.setdiff1d(
                 self.full_item_list,
-                self.interaction_dataset.get_client_view(
-                    client_id=self.interaction_dataset.client_partition.user_ids_2_client_ids[user_id],
-                    include_train=True,
-                    include_validation=False,
-                    include_test=False,
-                )['item_id'].unique(),
-            ) for user_id in self.interaction_dataset.interaction_data['user_id'].unique()
+                self._items_to_exclude(user_id, exclude_splits),
+            )
+            for user_id in self.interaction_dataset.interaction_data["user_id"].unique()
         }
-        self.threshold_rating = threshold_rating
 
     def evaluate(
         self,
@@ -155,7 +323,7 @@ class FullRankingEvaluator(Evaluator):
             client_eval_interactions = evaluation_data[evaluation_data['client_id'] == client_id]
             users_in_client = self.interaction_dataset.client_partition.client_ids_2_user_ids[client_id]
             candidate_items_per_user = {
-                user_id: self.user_candidate_items[user_id] for user_id in users_in_client
+                user_id: self.user_candidate_items[split][user_id] for user_id in users_in_client
             }
 
             scores, loss = self.client_algorithm.compute_scores(
