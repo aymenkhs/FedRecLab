@@ -1,4 +1,5 @@
-from typing import List, Callable, Dict, Any
+from typing import List, Callable, Dict, Any, Tuple
+from dataclasses import replace
 import copy
 import logging
 
@@ -290,31 +291,222 @@ class BaseFederatedServer:
         self,
         training_responses: List[ClientTrainingResponse],
     ):
+        """Aggregate each exchanged parameter group from the round's responses.
+
+        Groups that no selected client sent are skipped. Unknown package names
+        are rejected in ``_collect_updates``.
+
+        Parameters
+        ----------
+        training_responses : list of ClientTrainingResponse
+            Responses from the clients trained this round, in selection order.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Called from ``run_round`` after local training::
+
+            self.aggregate_parameters(training_responses)
+        """
         for param_name, param_io in self.param_ios.items():
-            if param_io.exchange is not None and param_io.exchange != "none":
+            if param_io.exchange is None or param_io.exchange == "none":
+                continue
+            updates, participant_ids = self._collect_updates(
+                param_name, param_io, training_responses
+            )
+            if not participant_ids:
+                continue
+            self._aggregate_group(param_name, param_io, updates, participant_ids)
 
-                if param_io.residency == "server":
-                    previous_parameters = self.global_parameters[param_name]
-                elif param_io.residency == "client":
-                    previous_parameters = [self.client_states[client_id].local_parameters[param_name] for client_id in self.current_round_statistics.selected]
-                    previous_parameters = self.__convert_to_framework_compatible(previous_parameters)
+    def _collect_updates(
+        self,
+        param_name: str,
+        param_io: ParamIO,
+        training_responses: List[ClientTrainingResponse],
+    ) -> Tuple[List[Any], List[int]]:
+        """Collect updates for one group, omitting clients that did not send it.
 
-                updates = [training_response.updates_packages[param_name].param_value for training_response in training_responses]
-                updates = self.__convert_to_framework_compatible(updates)
+        Every package name on every response must be an exchanged ParamIO
+        group. A misspelled name must not be ignored while the real group
+        is silently skipped.
 
-                aggregated_results = self.aggregation_strategies[param_name].aggregate(
-                    self.current_round_statistics,
-                    previous_parameters,
-                    updates,
-                    param_io,
+        Parameters
+        ----------
+        param_name : str
+            ParamIO group to collect.
+        param_io : ParamIO
+            Declaration for ``param_name``. Unused by the default
+            implementation; provided so overrides can branch on residency
+            or exchange without looking the group up again.
+        training_responses : list of ClientTrainingResponse
+            Responses from the clients trained this round.
+
+        Returns
+        -------
+        updates : list
+            ``param_value`` of each package named ``param_name``, in response
+            order.
+        participant_ids : list of int
+            Client ids aligned with ``updates``.
+
+        Raises
+        ------
+        KeyError
+            If a response contains a package whose name is not an exchanged
+            ParamIO group.
+
+        Examples
+        --------
+        Client 0 sends ``w``, client 1 does not::
+
+            updates, ids = server._collect_updates("w", param_io, responses)
+            # ids == [0]
+        """
+        exchanged = {
+            name
+            for name, pio in self.param_ios.items()
+            if pio.exchange is not None and pio.exchange != "none"
+        }
+        updates: List[Any] = []
+        participant_ids: List[int] = []
+        for response in training_responses:
+            unknown = sorted(
+                name for name in response.updates_packages if name not in exchanged
+            )
+            if unknown:
+                raise KeyError(
+                    f"Client {response.client_id} sent update package(s) "
+                    f"{unknown} that are not exchanged ParamIO groups "
+                    f"{sorted(exchanged)}"
                 )
+            package = response.updates_packages.get(param_name)
+            if package is None:
+                continue
+            updates.append(package.param_value)
+            participant_ids.append(response.client_id)
+        return updates, participant_ids
 
-                self._apply_aggregated_result(
-                    param_name=param_name,
-                    aggregated_result=aggregated_results,
-                    param_io=param_io,
-                    selected_client_ids=self.current_round_statistics.selected,
-                )
+    def _round_statistics_for_participants(
+        self,
+        participant_ids: List[int],
+    ) -> RoundStatistics:
+        """Copy round statistics restricted to one group's participants.
+
+        Uses ``dataclasses.replace`` so fields added to ``RoundStatistics``
+        later are kept. Known client-keyed dicts are sliced by direct
+        indexing.
+
+        Parameters
+        ----------
+        participant_ids : list of int
+            Clients that sent the group being aggregated.
+
+        Returns
+        -------
+        RoundStatistics
+            Same object as ``current_round_statistics`` except ``selected``
+            and ``responded`` are ``participant_ids``, ``dropped`` is empty,
+            and example/loss/duration maps contain only those clients.
+
+        Raises
+        ------
+        KeyError
+            If a participant is missing from a client-keyed statistics dict.
+        RuntimeError
+            If ``current_round_statistics`` has not been set.
+
+        Examples
+        --------
+        >>> stats = server._round_statistics_for_participants([2, 5])
+        >>> stats.selected
+        [2, 5]
+        """
+        stats = self.current_round_statistics
+        if stats is None:
+            raise RuntimeError(
+                "Per-group round statistics require current_round_statistics"
+            )
+        return replace(
+            stats,
+            selected=list(participant_ids),
+            responded=list(participant_ids),
+            dropped=[],
+            num_training_examples={
+                cid: stats.num_training_examples[cid] for cid in participant_ids
+            },
+            training_losses={
+                cid: stats.training_losses[cid] for cid in participant_ids
+            },
+            training_durations={
+                cid: stats.training_durations[cid] for cid in participant_ids
+            },
+        )
+
+    def _aggregate_group(
+        self,
+        param_name: str,
+        param_io: ParamIO,
+        updates: List[Any],
+        participant_ids: List[int],
+    ) -> None:
+        """Aggregate one exchanged group and apply the result.
+
+        Override to special-case a single group without copying the loop
+        over all ParamIO entries.
+
+        Parameters
+        ----------
+        param_name : str
+            ParamIO group being aggregated.
+        param_io : ParamIO
+            Declaration for ``param_name``.
+        updates : list
+            Per-participant values from ``_collect_updates``.
+        participant_ids : list of int
+            Clients aligned with ``updates``. Must be non-empty.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        Default path used by ``aggregate_parameters``::
+
+            self._aggregate_group("item_embeddings", param_io, updates, [0, 1])
+        """
+        if param_io.residency == "server":
+            previous_parameters = self.global_parameters[param_name]
+        elif param_io.residency == "client":
+            previous_parameters = [
+                self.client_states[client_id].local_parameters[param_name]
+                for client_id in participant_ids
+            ]
+            previous_parameters = self._convert_to_framework_compatible(
+                previous_parameters
+            )
+        else:
+            raise ValueError(
+                f"Invalid ParamIO.residency={param_io.residency!r} for "
+                f"parameter '{param_name}'"
+            )
+
+        updates = self._convert_to_framework_compatible(updates)
+        aggregated_results = self.aggregation_strategies[param_name].aggregate(
+            self._round_statistics_for_participants(participant_ids),
+            previous_parameters,
+            updates,
+            param_io,
+        )
+        self._apply_aggregated_result(
+            param_name=param_name,
+            aggregated_result=aggregated_results,
+            param_io=param_io,
+            selected_client_ids=participant_ids,
+        )
 
     def _apply_aggregated_result(
         self,
@@ -709,7 +901,37 @@ class BaseFederatedServer:
 
         return False
 
-    def __convert_to_framework_compatible(self, parameters: Any):
+    def _convert_to_framework_compatible(self, parameters: Any):
+        """Convert stacked or listed parameter values to ``training_framework``.
+
+        Dict-of-tensor groups stay a list of dicts (they are not stacked).
+        Dense lists are stacked into one array or tensor.
+
+        Parameters
+        ----------
+        parameters : list or array-like
+            Per-client updates or previous values. A list of dicts is treated
+            as state-dict groups; any other list is stacked.
+
+        Returns
+        -------
+        Any
+            Values on ``self.device`` if ``training_framework`` is ``"torch"``,
+            or NumPy arrays if it is ``"numpy"``.
+
+        Raises
+        ------
+        ValueError
+            If ``training_framework`` is not ``"torch"`` or ``"numpy"``.
+
+        Examples
+        --------
+        >>> server.training_framework = "numpy"
+        >>> server._convert_to_framework_compatible(
+        ...     [np.ones(2), np.zeros(2)]
+        ... ).shape
+        (2, 2)
+        """
         # Dict-of-tensor values (state-dict parameter groups): convert each
         # value inside the dicts to the target framework, return as list of dicts.
         if isinstance(parameters, list) and len(parameters) > 0 and isinstance(parameters[0], dict):

@@ -46,7 +46,7 @@ Imports currently use the `src.fedreclab` root and must be run from the reposito
 ## 5. The round loop and hooks
 See `docs/PROJECT_CONTEXT.md` §3.3 for the exact order. Hooks available to subclasses:
 
-- **Server:** `_initialize_server_parameters` (required), `_before_training`, `_on_round_start_server`, `_post_selection_callback`, `_build_server_payload(client_id)`, `_update_statistics`, `_apply_aggregated_result_custom`, `_on_round_end_server`.
+- **Server:** `_initialize_server_parameters` (required), `_before_training`, `_on_round_start_server`, `_post_selection_callback`, `_build_server_payload(client_id)`, `_update_statistics`, `_collect_updates`, `_aggregate_group`, `_apply_aggregated_result_custom`, `_on_round_end_server`.
 - **Components:** client selection and aggregators have `on_round_start` / `on_round_end`.
 - `self.current_round` and `self.selected_client_ids` are available inside all hooks.
 
