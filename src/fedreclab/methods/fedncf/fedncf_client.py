@@ -289,6 +289,37 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         client_state: ClientStateBase,
         extra_payload: Dict[str, Any],
     ) -> Dict[int, np.ndarray]:
+        """Score candidate items with the assembled FedNCF model.
+
+        See ``BaseClientAlgorithm.compute_scores`` for the ranking-evaluation
+        contract. This method returns scores only; it does not compute a
+        validation loss.
+
+        Parameters
+        ----------
+        client_id : int
+            Client being scored.
+        candidate_items_per_user : dict of int to ndarray
+            Item ids to score, keyed by remapped user id.
+        global_parameters : dict
+            Server-resident NCF groups for this round.
+        client_state : ClientStateBase
+            Holds the two client-resident user embedding tables.
+        extra_payload : dict
+            Unused by FedNCF scoring.
+
+        Returns
+        -------
+        dict of int to ndarray
+            Predicted scores per user, aligned with that user's candidates.
+
+        Examples
+        --------
+        >>> # doctest: +SKIP
+        >>> scores = client.compute_scores(0, {0: np.array([1, 2])}, payload, state, {})
+        >>> scores[0].shape
+        (2,)
+        """
         self.init_model_skeleton()
         model = self._skeleton
         device = self._device

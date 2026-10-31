@@ -74,6 +74,46 @@ class BaseClientAlgorithm:
         client_state: ClientStateBase,
         extra_payload: Dict[str, Any],
     ) -> Dict[int, np.ndarray]:
+        """Score every candidate item for each user on this client.
+
+        Ranking evaluation calls this hook and ranks the returned scores
+        against held-out positives. It does not compute a training loss:
+        ``compute_scores`` is not given labels, ratings, or sampled
+        negatives.
+
+        Parameters
+        ----------
+        client_id : int
+            Client being scored.
+        candidate_items_per_user : dict of int to ndarray
+            Item ids to score, keyed by remapped user id.
+        global_parameters : dict
+            Server-resident tensors for this round.
+        client_state : ClientStateBase
+            Client-resident tensors (user embeddings, and so on).
+        extra_payload : dict
+            Method-specific extras (for example expanded neighbour state).
+
+        Returns
+        -------
+        dict of int to ndarray
+            One score array per user, aligned with that user's candidate
+            item ids. Higher is better.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; subclasses must override.
+
+        Examples
+        --------
+        >>> # doctest: +SKIP
+        >>> scores = client.compute_scores(
+        ...     0, {0: np.array([1, 2])}, payload, state, {}
+        ... )
+        >>> scores[0].shape
+        (2,)
+        """
         raise NotImplementedError("Subclasses must implement this method")
 
     def apply_privacy(

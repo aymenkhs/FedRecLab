@@ -1054,8 +1054,29 @@ class BaseFederatedServer:
             return self._early_stopping_with_patience(current_round)
 
     def _initialize_early_stopping(self):
+        """Fill patience defaults; require an explicit ranking metric when stopping.
 
+        Ranking evaluation does not produce a loss, so ``metric`` cannot
+        default to ``"loss"``. When patience early stopping is on,
+        ``early_stopping_parameters["metric"]`` must name a key that
+        ``evaluate`` stores (for example ``"ndcg@10"``). Direction
+        defaults to ``"max"``.
 
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If ``early_stopping`` is True, ``early_stopping_custom`` is
+            False, and ``metric`` is missing or is ``"loss"``.
+
+        Examples
+        --------
+        With ``early_stopping=True`` and ``{"metric": "ndcg@10"}``,
+        direction defaults to ``"max"`` and patience to ``5``.
+        """
         if self.early_stopping_custom:
             return
 
