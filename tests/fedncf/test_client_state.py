@@ -102,3 +102,14 @@ def test_every_skeleton_tensor_is_in_the_server_groups():
     broken.remove("gmf_item_embeddings.weight")
     with pytest.raises(RuntimeError, match="Skeleton coverage mismatch"):
         assert_skeleton_server_coverage(model, broken)
+
+
+def test_output_weights_group_is_only_the_prediction_layer():
+    """N's prediction layer is output_logits; dummy GMF/MLP heads are gone."""
+    model = NeuralCollaborativeFiltering(num_items=4, predictive_factor=8)
+    keys = set(model.get_server_state_groups()["output_weights"])
+    assert keys == {"output_logits.weight", "output_logits.bias"}
+    assert not hasattr(model, "gmf_out")
+    assert not hasattr(model, "mlp_out")
+    assert not hasattr(model, "join_output_weights")
+    assert not hasattr(model, "model_blending")

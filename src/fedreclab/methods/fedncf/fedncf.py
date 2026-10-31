@@ -39,6 +39,12 @@ Deviations from the paper:
   MLP ``24 → 48 → 24 → 12 → 6``; setting ``predictive_factor=12`` does
   not recover it. The paper architecture is not expressible until MLP
   and GMF widths are configurable (NCF-03).
+
+  The prediction layer is Xavier-initialised once and trained as part of
+  N (§3.4, §4.2). Dummy GMF/MLP output heads and He et al. Eq. 13
+  blending are omitted: that formula is one-shot pretrained NeuMF
+  initialisation. Public GitHub copies that re-join the head every round
+  are independent reimplementations, not the KBS experiment code.
 """
 
 from src.fedreclab.federated.base_server import BaseFederatedServer

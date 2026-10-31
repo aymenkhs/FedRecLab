@@ -10,6 +10,7 @@ import pytest
 import torch
 from torch import nn
 
+from src.fedreclab.federated.base_client import ClientTrainingRequest
 from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
 
 
@@ -45,7 +46,6 @@ def test_persist_all_moments_matches_a_module_that_owns_user_tables(
 
     backbone = NeuralCollaborativeFiltering(num_items=6, predictive_factor=8)
     backbone.load_server_weights(payload0)
-    backbone.join_output_weights()
     owned = _ModuleWithUserTables(
         backbone,
         user0["gmf_user_embeddings.weight"],
@@ -106,3 +106,62 @@ def test_persist_all_moments_matches_a_module_that_owns_user_tables(
             atol=1e-6,
             rtol=1e-6,
         )
+
+
+def test_prediction_layer_is_trained_and_not_reset_between_rounds(
+    fedncf_client_and_request,
+):
+    """output_logits is part of N: trained locally, then kept as the next payload."""
+    client, request = fedncf_client_and_request()
+    w0 = request.global_payload["output_weights"]["output_logits.weight"].clone()
+    resp1 = client.local_train(request)
+    w1 = torch.as_tensor(
+        resp1.updates_packages["output_weights"].param_value["output_logits.weight"]
+    ).clone()
+    assert not torch.equal(w0, w1)
+
+    payload2 = _clone_groups(request.global_payload)
+    payload2["output_weights"] = {
+        k: torch.as_tensor(v).clone()
+        for k, v in resp1.updates_packages["output_weights"].param_value.items()
+    }
+    client.lr = 0.0
+    request2 = ClientTrainingRequest(
+        client_id=0,
+        current_round=1,
+        users_in_client=[0],
+        client_state=resp1.updated_client_state,
+        global_payload=payload2,
+        training_data=request.training_data,
+        param_ios=request.param_ios,
+        seed=request.seed,
+    )
+    resp2 = client.local_train(request2)
+    w2 = torch.as_tensor(
+        resp2.updates_packages["output_weights"].param_value["output_logits.weight"]
+    )
+    torch.testing.assert_close(w2, w1, atol=1e-7, rtol=0.0)
+
+
+def test_scoring_does_not_reset_the_prediction_layer(fedncf_client_and_request):
+    client, request = fedncf_client_and_request()
+    resp = client.local_train(request)
+    payload = _clone_groups(request.global_payload)
+    payload["output_weights"] = {
+        k: torch.as_tensor(v).clone()
+        for k, v in resp.updates_packages["output_weights"].param_value.items()
+    }
+    w_trained = payload["output_weights"]["output_logits.weight"].clone()
+    client.compute_scores(
+        0,
+        {0: np.array([1, 2, 3])},
+        payload,
+        resp.updated_client_state,
+        None,
+    )
+    torch.testing.assert_close(
+        client._skeleton.output_logits.weight.detach().cpu(),
+        w_trained,
+        atol=0.0,
+        rtol=0.0,
+    )

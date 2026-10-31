@@ -18,6 +18,10 @@ Training protocol (paper §3.1, §4.1–4.2):
   positives keep the raw rating and negatives stay 0. That is explicit
   rating prediction under a ranking evaluator, not the KBS protocol.
 
+The prediction layer is part of N: it is loaded from the server payload,
+trained, and uploaded. It is not re-derived each round. Public GitHub
+copies that call He et al. Eq. 13 every round are not a reference.
+
 optimizer_state_scope:
   - "client_resident" (default): persist Adam moments for user tables only
   - "none": no optimiser state is kept
@@ -211,7 +215,6 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         user_id_to_local = client_state.local_parameters["user_id_to_local"]
 
         model.load_server_weights(training_request.global_payload)
-        model.join_output_weights()
         model.train()
 
         named_params, gmf_user, mlp_user = self._inject_user_parameters(client_state)
@@ -477,7 +480,6 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         user_id_to_local = client_state.local_parameters["user_id_to_local"]
 
         model.load_server_weights(global_parameters)
-        model.join_output_weights()
         _, gmf_user, mlp_user = self._inject_user_parameters(client_state)
         model.eval()
 

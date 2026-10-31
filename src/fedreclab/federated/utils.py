@@ -57,9 +57,9 @@ def flatten_grouped_state(groups: Mapping[str, Mapping[str, Any]]) -> dict[str, 
     --------
     >>> flatten_grouped_state({
     ...     "item_embeddings": {"gmf_item_embeddings.weight": 1},
-    ...     "output_weights": {"gmf_out.bias": 2},
+    ...     "output_weights": {"output_logits.bias": 2},
     ... })
-    {'gmf_item_embeddings.weight': 1, 'gmf_out.bias': 2}
+    {'gmf_item_embeddings.weight': 1, 'output_logits.bias': 2}
     """
     flat: dict[str, Any] = {}
     for group_name, group in groups.items():
