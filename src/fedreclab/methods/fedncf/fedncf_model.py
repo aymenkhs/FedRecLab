@@ -22,20 +22,23 @@ class NeuralCollaborativeFiltering(nn.Module):
     """Server-resident NCF skeleton (item tables, MLP, prediction layer).
 
     User embedding tables are client-resident and are passed into ``forward``
-    as tensors; they are not stored on this module.
+    as tensors; they are not stored on this module. Embedding width is
+    ``2 * predictive_factor``.
 
     The prediction layer is a single ``Linear`` over the concatenated GMF
     product and MLP tower. It is Xavier-initialised once (paper §4.2) and
-    exchanged in ``output_weights``. Dummy GMF/MLP output heads and per-round
-    Eq. 13 blending are not used.
+    exchanged in ``output_weights``. See the module docstring for why dummy
+    GMF/MLP output heads are omitted.
 
     Parameters
     ----------
     num_items : int
         Number of items after ``InteractionDataset`` remapping.
     predictive_factor : int, optional
-        Latent width of this tower. Default is 32. This is the public-code
-        width, not the paper's D=12 with MLP ``24 → 48 → 24 → 12 → 6``.
+        Controls embedding width (``2 * predictive_factor``) and the MLP
+        tower. Default is 32. The paper's D=12 is
+        ``predictive_factor=6``, but the MLP shape still cannot match
+        ``24 → 48 → 24 → 12 → 6``.
 
     Examples
     --------

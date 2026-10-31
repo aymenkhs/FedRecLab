@@ -111,8 +111,15 @@ def test_persist_all_moments_matches_a_module_that_owns_user_tables(
 def test_prediction_layer_is_trained_and_not_reset_between_rounds(
     fedncf_client_and_request,
 ):
-    """output_logits is part of N: trained locally, then kept as the next payload."""
-    client, request = fedncf_client_and_request()
+    """output_logits is part of N: trained locally, then kept as the next payload.
+
+    Pins ``optimizer_state_scope="client_resident"`` so round 2 rebuilds
+    Adam from ``self.lr``. Under ``"all"``, persisted moments keep the
+    old learning rate and ``client.lr = 0.0`` would not freeze the head.
+    """
+    client, request = fedncf_client_and_request(
+        optimizer_state_scope="client_resident"
+    )
     w0 = request.global_payload["output_weights"]["output_logits.weight"].clone()
     resp1 = client.local_train(request)
     w1 = torch.as_tensor(

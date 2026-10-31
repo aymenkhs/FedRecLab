@@ -18,9 +18,10 @@ Training protocol (paper §3.1, §4.1–4.2):
   positives keep the raw rating and negatives stay 0. That is explicit
   rating prediction under a ranking evaluator, not the KBS protocol.
 
-The prediction layer is part of N: it is loaded from the server payload,
-trained, and uploaded. It is not re-derived each round. Public GitHub
-copies that call He et al. Eq. 13 every round are not a reference.
+The prediction layer is part of N: loaded from the server payload,
+trained, and uploaded. It is not re-derived each round. See
+``fedncf_model`` (module docstring) for why dummy GMF/MLP heads are
+omitted.
 
 optimizer_state_scope:
   - "client_resident" (default): persist Adam moments for user tables only

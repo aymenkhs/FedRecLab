@@ -33,18 +33,14 @@ Simulation shortcuts:
 Deviations from the paper:
   Labels and loss follow §4.2 (implicit binary targets, BCE, four
   negatives). ``lr=5e-4`` and ``local_epochs=5`` are the public-code
-  defaults, not Adam 0.001 and two local epochs. The NeuMF skeleton is
-  the public-code tower (embeddings of size ``2 * predictive_factor``,
+  defaults, not Adam 0.001 and two local epochs.   The NeuMF skeleton is
+  the public-code tower (embedding width ``2 * predictive_factor``,
   MLP ``4pf → 2pf → pf → pf/2``). That is not the paper's D=12 with
-  MLP ``24 → 48 → 24 → 12 → 6``; setting ``predictive_factor=12`` does
-  not recover it. The paper architecture is not expressible until MLP
-  and GMF widths are configurable (NCF-03).
-
-  The prediction layer is Xavier-initialised once and trained as part of
-  N (§3.4, §4.2). Dummy GMF/MLP output heads and He et al. Eq. 13
-  blending are omitted: that formula is one-shot pretrained NeuMF
-  initialisation. Public GitHub copies that re-join the head every round
-  are independent reimplementations, not the KBS experiment code.
+  MLP ``24 → 48 → 24 → 12 → 6``; ``predictive_factor=6`` matches D=12
+  on the embeddings but the MLP still cannot. The paper architecture
+  is not expressible until MLP and GMF widths are configurable
+  (NCF-03). Prediction-layer provenance is in
+  ``fedncf_model`` (module docstring).
 """
 
 from src.fedreclab.federated.base_server import BaseFederatedServer
