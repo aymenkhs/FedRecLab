@@ -352,6 +352,11 @@ class FullRankingEvaluator(Evaluator):
 
                 metrics_results_per_user[user_id] = self.compute_metrics_per_user(ranked_item_ids, eval_items)
 
+        if not metrics_results_per_user:
+            raise ValueError(
+                f"No users had evaluation interactions for split {split!r}."
+            )
+
         metrics_list = metrics_results_per_user[list(metrics_results_per_user.keys())[0]].keys()
         metric_results = {}
         for metric in metrics_list:
