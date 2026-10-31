@@ -1,9 +1,22 @@
+"""FedPerGNN client algorithm.
+
+The shared GAT skeleton lives on this object and is loaded from the server
+payload each call. ClientState holds the owner's user embedding and a
+name-keyed optimiser dict; that embedding is the source of truth for the
+owner's trajectory. The server user table is a mirror updated by the sparse
+upload each round (expansion / neighbours). With neighbor_embeddings_trainable,
+other clients can still write the owner's row in the mirror, but that no
+longer becomes this client's next starting point.
+"""
+
+import logging
 import time
 from collections import defaultdict
 from typing import Dict, Any, Tuple, List
 
 import numpy as np
 import torch
+from torch import nn
 
 from src.fedreclab.federated.base_client import (
     BaseClientAlgorithm,
@@ -11,8 +24,21 @@ from src.fedreclab.federated.base_client import (
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+from src.fedreclab.federated.utils import (
+    ParamIO,
+    UpdatePackage,
+    assert_client_names_disjoint,
+    assert_skeleton_server_coverage,
+    extract_named_optimizer_state,
+    restore_named_optimizer_state,
+)
 from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
+
+logger = logging.getLogger(__name__)
+
+_CLIENT_TENSOR_NAMES = ("user_embedding.weight",)
+_OPTIMIZER_STATE_SCOPES = ("client_resident", "none", "all")
+_ALL_SCOPE_WARN_BYTES = 1 << 30
 
 
 class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
@@ -26,8 +52,14 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         lr: float = 1e-3,
         batch_size: int = 128,
         neighbor_embeddings_trainable: bool = False,
+        optimizer_state_scope: str = "client_resident",
     ) -> None:
         super().__init__()
+        if optimizer_state_scope not in _OPTIMIZER_STATE_SCOPES:
+            raise ValueError(
+                f"optimizer_state_scope must be one of {_OPTIMIZER_STATE_SCOPES}, "
+                f"got {optimizer_state_scope!r}"
+            )
         self.hidden_dim = hidden_dim
         self.history_len = history_len
         self.neighbor_len = neighbor_len
@@ -35,8 +67,27 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         self.lr = lr
         self.batch_size = batch_size
         self.neighbor_embeddings_trainable = neighbor_embeddings_trainable
+        self.optimizer_state_scope = optimizer_state_scope
 
         self._num_items: int | None = None
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._skeleton: FedPerGNNModel | None = None
+        self._warned_all_scope = False
+
+    def init_model_skeleton(self):
+        if self._skeleton is not None:
+            return
+        if self._num_items is None:
+            raise RuntimeError("init_model_skeleton requires num_items to be set")
+        self._skeleton = FedPerGNNModel(
+            num_items=self._num_items,
+            hidden_dim=self.hidden_dim,
+            history_len=self.history_len,
+            neighbor_len=self.neighbor_len,
+        ).to(self._device)
+        server_names = set(self._skeleton.get_server_state())
+        assert_skeleton_server_coverage(self._skeleton, server_names)
+        assert_client_names_disjoint(server_names, _CLIENT_TENSOR_NAMES)
 
     def initialize_local_parameters(
         self,
@@ -46,79 +97,50 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         num_items: int,
         client_train_data_view,
         users_in_client: List[int],
-    ) -> Tuple[Dict[str, Any], Any]:
+    ) -> Tuple[Dict[str, Any], None]:
         if self._num_items is None:
             self._num_items = num_items
+        self.init_model_skeleton()
+        self._maybe_warn_all_scope(total_num_users)
 
-        # TODO: Allow for custom MLP and GAT layers with a custom activation function, and parameters.
-        # TODO: Currently we are sending all paramters as local paramters but later on we will only store 
-        # completely local parameters in the client state.
-        model = FedPerGNNModel(
-            num_items=num_items,
-            hidden_dim=self.hidden_dim,
-            history_len=self.history_len,
-            neighbor_len=self.neighbor_len,
-        )
-        # TODO: Allow for custom optimizer with a custom learning rate, and parameters.
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
-
-        local_params = {
-            "model": model,
-        }
-        return local_params, optimizer
+        user_emb = torch.empty(1, self.hidden_dim)
+        nn.init.normal_(user_emb, std=0.01)
+        return {"user_embedding.weight": user_emb}, None
 
     def local_train(self, training_request: ClientTrainingRequest) -> ClientTrainingResponse:
         t0 = time.time()
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.init_model_skeleton()
+        model = self._skeleton
+        device = self._device
 
         client_id = training_request.client_id
         client_state = training_request.client_state
         training_data = training_request.training_data
 
-        model: FedPerGNNModel = client_state.local_parameters["model"]
         model.load_server_state(training_request.global_payload["model_state"])
-
-        # Load central user embedding from canonical table (central user is always trained).
-        users_in_client = training_request.users_in_client
-        central_user_id = int(users_in_client[0]) if users_in_client else 0
-        if "user_embeddings" in training_request.global_payload:
-            user_emb_table = training_request.global_payload["user_embeddings"]
-            row = np.asarray(user_emb_table[central_user_id], dtype=np.float32)
-            model.load_user_state({"user_embedding.weight": row.reshape(1, -1)})
-
-        model.to(device)
         model.train()
 
-        optimizer = client_state.optimizer_state
-        if not isinstance(optimizer, torch.optim.Optimizer):
-            optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
+        named_params, user_emb = self._inject_user_parameter(client_state)
+        optimizer = torch.optim.Adam(list(model.parameters()) + [user_emb], lr=self.lr)
+        restore_named_optimizer_state(optimizer, named_params, client_state.optimizer_state)
 
-        user_col, item_col = "user_id", "item_id"
+        users_in_client = training_request.users_in_client
+        central_user_id = int(users_in_client[0]) if users_in_client else 0
+
+        item_col = "item_id"
         rating_col = "rating" if "rating" in training_data.columns else None
 
-        # All interactions belong to the same user for CrossDeviceSplitting.
-        user_ids_np = training_data[user_col].values.astype(np.int64)
         item_ids_np = training_data[item_col].values.astype(np.int64)
         if rating_col is not None:
             ratings_np = training_data[rating_col].values.astype(np.float32)
         else:
             ratings_np = np.ones(len(training_data), dtype=np.float32)
 
-        # History and neighbor embeddings are expected from extra_payload.
-        # WarmupA is handled on the server by sending all-zero neighbor tensors.
-        expanded_payload_all = training_request.extra_payload or {}
-        expanded_for_client = expanded_payload_all.get("expanded_user_data", {}).get(client_id, None)
-        if expanded_for_client is None:
-            raise KeyError(
-                "FedPerGNN requires server-provided expansion payload at "
-                "extra_payload['expanded_user_data'][client_id]."
-            )
-
+        expanded_for_client = self._require_expansion(training_request.extra_payload, client_id)
         history_items_np = expanded_for_client.get("history_item_ids")
         neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
         neighbor_user_ids_np = expanded_for_client.get("neighbor_user_ids")
 
-        # Accumulators for neighbor embedding updates when neighbor_embeddings_trainable.
         sum_emb: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
         sum_grad: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
         count_grad: Dict[int, int] = defaultdict(int)
@@ -140,7 +162,6 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             indices = np.arange(num_examples)
             np.random.shuffle(indices)
 
-            user_ids_np_shuffled = user_ids_np[indices]
             item_ids_np_shuffled = item_ids_np[indices]
             ratings_np_shuffled = ratings_np[indices]
 
@@ -152,9 +173,6 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                 if start >= end:
                     break
 
-                b_user_ids = torch.as_tensor(
-                    user_ids_np_shuffled[start:end], dtype=torch.long, device=device
-                )
                 b_item_ids = torch.as_tensor(
                     item_ids_np_shuffled[start:end], dtype=torch.long, device=device
                 )
@@ -181,9 +199,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
                 optimizer.zero_grad()
                 preds = model(
-                    user_ids=b_user_ids,
                     item_ids=b_item_ids,
                     history_item_ids=b_hist_items,
+                    user_embedding=user_emb,
                     neighbor_embeddings=b_neighbor_emb,
                 )
                 loss = torch.mean((preds - b_ratings) ** 2)
@@ -208,17 +226,12 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             if num_batches > 0:
                 all_losses.append(epoch_loss / num_batches)
 
-        model = model.cpu()
-
-        server_state = model.get_server_state()
-
         numpy_state: Dict[str, Any] = {
             k: (v.detach().cpu().numpy() if hasattr(v, "detach") else np.asarray(v))
-            for k, v in server_state.items()
+            for k, v in model.get_server_state().items()
         }
 
-        # Sparse user_embeddings update: central user always; neighbor rows when neighbor_embeddings_trainable.
-        user_embedding_row = model.get_user_state()["user_embedding.weight"].detach().cpu().numpy()
+        user_embedding_row = user_emb.detach().cpu().numpy()
         user_ids_list: List[int] = [central_user_id]
         embeddings_list: List[np.ndarray] = [np.asarray(user_embedding_row.squeeze(0), dtype=np.float32)]
         if self.neighbor_embeddings_trainable and count_emb and count_grad:
@@ -255,9 +268,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         updated_state = ClientStateBase(
             client_id=client_id,
             local_parameters={
-                "model": model,
+                "user_embedding.weight": user_emb.detach().cpu().clone(),
             },
-            optimizer_state=optimizer,
+            optimizer_state=self._scoped_optimizer_state(optimizer, named_params),
         )
 
         return ClientTrainingResponse(
@@ -277,28 +290,15 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         client_state: ClientStateBase,
         extra_payload: Dict[str, Any],
     ) -> Tuple[Dict[int, np.ndarray], float]:
-        """
-        Compute scores for ranking evaluation.
+        self.init_model_skeleton()
+        model = self._skeleton
+        device = self._device
 
-        For now we ignore neighbor information during scoring for simplicity
-        and only use a fixed history per user. This can be extended later to
-        align with the training-time expansion logic.
-        """
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        model: FedPerGNNModel = client_state.local_parameters["model"]
         model.load_server_state(global_parameters["model_state"])
-        model.to(device)
+        _, user_emb = self._inject_user_parameter(client_state)
         model.eval()
 
-        # Expansion payload is produced server-side and is mandatory for FedPerGNN.
-        expanded_payload_all = extra_payload or {}
-        expanded_for_client = expanded_payload_all.get("expanded_user_data", {}).get(client_id, None)
-        if expanded_for_client is None:
-            raise KeyError(
-                "FedPerGNN requires server-provided expansion payload at "
-                "extra_payload['expanded_user_data'][client_id]."
-            )
+        expanded_for_client = self._require_expansion(extra_payload, client_id)
         history_items_np = expanded_for_client.get("history_item_ids")
         neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
 
@@ -307,7 +307,6 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         with torch.no_grad():
             for user_id, cand_items in candidate_items_per_user.items():
                 b = len(cand_items)
-                user_ids = torch.full((b,), int(user_id), dtype=torch.long, device=device)
                 item_ids = torch.as_tensor(cand_items, dtype=torch.long, device=device)
                 hist_items = torch.as_tensor(
                     np.repeat(history_items_np[None, :], repeats=b, axis=0),
@@ -325,13 +324,51 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                     neigh = None
 
                 preds = model(
-                    user_ids=user_ids,
                     item_ids=item_ids,
                     history_item_ids=hist_items,
+                    user_embedding=user_emb,
                     neighbor_embeddings=neigh,
                 )
                 scores[user_id] = preds.cpu().numpy()
 
-        model = model.cpu()
         return scores, 0.0
 
+    def _inject_user_parameter(self, client_state: ClientStateBase):
+        weight = client_state.local_parameters["user_embedding.weight"]
+        user_emb = nn.Parameter(torch.as_tensor(weight, device=self._device).clone())
+        named_params = {n: p for n, p in self._skeleton.named_parameters()}
+        named_params["user_embedding.weight"] = user_emb
+        return named_params, user_emb
+
+    def _scoped_optimizer_state(self, optimizer, named_params):
+        if self.optimizer_state_scope == "none":
+            return None
+        names_to_keep = None
+        if self.optimizer_state_scope == "client_resident":
+            names_to_keep = _CLIENT_TENSOR_NAMES
+        return extract_named_optimizer_state(optimizer, named_params, names_to_keep)
+
+    def _maybe_warn_all_scope(self, num_clients: int):
+        if self.optimizer_state_scope != "all" or self._warned_all_scope:
+            return
+        self._warned_all_scope = True
+        n_params = sum(p.numel() for p in self._skeleton.parameters())
+        bytes_est = n_params * 2 * 4 * max(num_clients, 1)
+        if bytes_est >= _ALL_SCOPE_WARN_BYTES:
+            logger.warning(
+                "optimizer_state_scope='all' stores Adam moments for every server "
+                "parameter on every client (~%.1f GiB estimated). This is memory-heavy; "
+                "prefer 'client_resident' unless you have a state store.",
+                bytes_est / _ALL_SCOPE_WARN_BYTES,
+            )
+
+    @staticmethod
+    def _require_expansion(extra_payload, client_id: int):
+        expanded_payload_all = extra_payload or {}
+        expanded_for_client = expanded_payload_all.get("expanded_user_data", {}).get(client_id, None)
+        if expanded_for_client is None:
+            raise KeyError(
+                "FedPerGNN requires server-provided expansion payload at "
+                f"extra_payload['expanded_user_data'][{client_id}]."
+            )
+        return expanded_for_client

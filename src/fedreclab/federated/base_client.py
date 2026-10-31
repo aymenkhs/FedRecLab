@@ -11,6 +11,7 @@ from src.fedreclab.federated.utils import UpdatePackage
 class ClientStateBase:
     client_id: int
     local_parameters: Dict[str, Any]
+    # Name-keyed optimiser moments ({param_name: {exp_avg, ...}}), never a live Optimizer.
     optimizer_state: Dict[str, Any] | None = None
     metadata: dict | None = None
 

@@ -17,6 +17,11 @@ from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFilteri
 
 
 class FedNCF(BaseFederatedServer):
+    """Federated NCF. Server holds item tables, MLP and output weights.
+
+    User embedding tables and their optimiser state live in ClientState.
+    """
+
 
     def __init__(self, predictive_factor: int = 32, **kwargs):
         self.predictive_factor = predictive_factor
@@ -33,13 +38,8 @@ class FedNCF(BaseFederatedServer):
         super().__init__(param_ios=param_ios, **kwargs)
 
     def _initialize_server_parameters(self):
-        """Create initial server weights using a temporary model.
-
-        num_users=1 is a dummy value -- the server model never uses user
-        embeddings.  Only item embeddings and shared layers are extracted.
-        """
+        """Create initial server weights using a temporary skeleton."""
         model = NeuralCollaborativeFiltering(
-            num_users=1,
             num_items=self.interaction_dataset.num_items,
             predictive_factor=self.predictive_factor,
         )

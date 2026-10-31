@@ -11,6 +11,19 @@ from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
 class FedPerGNN(BaseFederatedServer):
+    """Federated GNN personalization (Wu et al., 2022).
+
+    Simulation shortcuts:
+      The server holds a canonical user-embedding table used as an expansion
+      mirror (neighbour lookup). Each client's own embedding lives in
+      ClientState and is uploaded every round so the table stays a copy of
+      last-round owner rows plus neighbour proposals. user_embeddings_aggregate
+      chooses how neighbour proposals for a row are combined into that mirror;
+      it does not write back into the owner's ClientState.
+      neighbor_embeddings_trainable still lets other clients propose edits to
+      your row in the mirror; those edits no longer become your next local
+      starting point.
+    """
     def __init__(
         self,
         hidden_dim: int = 64,
@@ -53,8 +66,8 @@ class FedPerGNN(BaseFederatedServer):
                 exchange="params",
                 apply_to="server",
             ),
-            # Canonical user embedding table (server-side). Exchanged so clients can load/send sparse updates.
-            # apply_to="custom": we scatter or per-user aggregate then scatter in _apply_aggregated_result_custom.
+            # Expansion mirror of user embeddings. apply_to="custom" scatters
+            # (or per-user aggregates) sparse client uploads; owners train from ClientState.
             "user_embeddings": ParamIO(
                 residency="server",
                 exchange="params",

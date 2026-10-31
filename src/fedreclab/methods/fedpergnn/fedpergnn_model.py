@@ -22,10 +22,6 @@ class FedPerGNNModel(nn.Module):
         # Item embedding table (server-side parameter)
         self.item_embeddings = nn.Embedding(num_items, hidden_dim)
 
-        # Client-personalized user embedding (one vector per client/user).
-        # TODO: Allow for cross-silo scenarios or for multiple users per client.
-        self.user_embedding = nn.Embedding(1, hidden_dim)
-
         # Dense used to project history item embeddings (uiemb in Keras code).
         self.history_item_proj = nn.Linear(hidden_dim, hidden_dim)
 
@@ -60,7 +56,6 @@ class FedPerGNNModel(nn.Module):
 
     def _reset_parameters(self) -> None:
         nn.init.normal_(self.item_embeddings.weight, std=0.01)
-        nn.init.normal_(self.user_embedding.weight, std=0.01)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -68,106 +63,49 @@ class FedPerGNNModel(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def get_server_state(self) -> dict:
-        """
-        Return a dict of tensors that represent server-side parameters.
-
-        By default this excludes the client-personalized user embedding.
-        """
+        """Return every skeleton parameter and buffer (server-resident)."""
         state: dict[str, torch.Tensor] = {
-            "item_embeddings.weight": self.item_embeddings.weight.data.clone(),
-            "history_item_proj.weight": self.history_item_proj.weight.data.clone(),
-            "history_item_proj.bias": self.history_item_proj.bias.data.clone(),
-            "neighbor_proj.weight": self.neighbor_proj.weight.data.clone(),
-            "neighbor_proj.bias": self.neighbor_proj.bias.data.clone(),
-            "user_final_proj.weight": self.user_final_proj.weight.data.clone(),
-            "user_final_proj.bias": self.user_final_proj.bias.data.clone(),
-            "output_layer.weight": self.output_layer.weight.data.clone(),
-            "output_layer.bias": self.output_layer.bias.data.clone(),
+            k: v.detach().cpu().clone() for k, v in self.named_parameters()
         }
-
-        # Flatten MLP state dicts so that aggregation sees only tensor leaves.
-        for k, v in self.neighbor_att_mlp.state_dict().items():
-            state[f"neighbor_att_mlp.{k}"] = v.data.clone()
-        for k, v in self.history_att_mlp.state_dict().items():
-            state[f"history_att_mlp.{k}"] = v.data.clone()
-
+        for k, v in self.named_buffers():
+            state[k] = v.detach().cpu().clone()
         return state
 
     def load_server_state(self, server_state: dict) -> None:
-        """
-        Load server-side parameters from a dict produced by get_server_state().
-
-        Accepts both torch.Tensor and numpy.ndarray values.
-        """
+        """Load server-side parameters from a dict produced by get_server_state()."""
         def as_tensor(x):
             return x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
 
-        self.item_embeddings.weight.data.copy_(as_tensor(server_state["item_embeddings.weight"]))
-        self.history_item_proj.weight.data.copy_(as_tensor(server_state["history_item_proj.weight"]))
-        self.history_item_proj.bias.data.copy_(as_tensor(server_state["history_item_proj.bias"]))
-        self.neighbor_proj.weight.data.copy_(as_tensor(server_state["neighbor_proj.weight"]))
-        self.neighbor_proj.bias.data.copy_(as_tensor(server_state["neighbor_proj.bias"]))
-
-        # Neighbor attention MLP
-        neighbor_prefix = "neighbor_att_mlp."
-        neighbor_att_state = {
-            k[len(neighbor_prefix) :]: as_tensor(v)
-            for k, v in server_state.items()
-            if k.startswith(neighbor_prefix)
-        }
-        if neighbor_att_state:
-            self.neighbor_att_mlp.load_state_dict(neighbor_att_state)
-
-        # History attention MLP
-        history_prefix = "history_att_mlp."
-        history_att_state = {
-            k[len(history_prefix) :]: as_tensor(v)
-            for k, v in server_state.items()
-            if k.startswith(history_prefix)
-        }
-        if history_att_state:
-            self.history_att_mlp.load_state_dict(history_att_state)
-
-        self.user_final_proj.weight.data.copy_(as_tensor(server_state["user_final_proj.weight"]))
-        self.user_final_proj.bias.data.copy_(as_tensor(server_state["user_final_proj.bias"]))
-        self.output_layer.weight.data.copy_(as_tensor(server_state["output_layer.weight"]))
-        self.output_layer.bias.data.copy_(as_tensor(server_state["output_layer.bias"]))
-
-    def get_user_state(self) -> dict:
-        """Return client-local user embedding state."""
-        return {
-            "user_embedding.weight": self.user_embedding.weight.data.clone(),
-        }
-
-    def load_user_state(self, user_state: dict) -> None:
-        """Load client-local user embedding state."""
-        w = user_state.get("user_embedding.weight", None)
-        if w is not None:
-            self.user_embedding.weight.data.copy_(
-                w if isinstance(w, torch.Tensor) else torch.as_tensor(w)
+        named = {n: p for n, p in self.named_parameters()}
+        named.update({n: b for n, b in self.named_buffers()})
+        missing = set(named) - set(server_state)
+        extra = set(server_state) - set(named)
+        if missing or extra:
+            raise KeyError(
+                "Server payload / skeleton mismatch: "
+                f"missing_from_payload={sorted(missing)} extra_in_payload={sorted(extra)}"
             )
+        for name, tensor in named.items():
+            tensor.data.copy_(as_tensor(server_state[name]).to(device=tensor.device))
 
     def forward(
         self,
-        user_ids: torch.Tensor,
         item_ids: torch.Tensor,
         history_item_ids: torch.Tensor,
+        user_embedding: torch.Tensor,
         neighbor_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Forward pass.
 
         Args:
-            user_ids: (B,) int64 – kept for API parity, but the model uses a
-                single local user embedding. All examples in the batch are
-                assumed to belong to the same client/user.
             item_ids: (B,) int64
             history_item_ids: (B, L) int64
+            user_embedding: (1, H) or (H,) client-resident user row
             neighbor_embeddings: (B, L, N, H) float32, or None. When None,
                 neighbors are ignored and only item history drives the user
                 representation.
         """
-        device = item_ids.device
         batch_size = item_ids.size(0)
 
         # Target items
@@ -177,9 +115,7 @@ class FedPerGNNModel(nn.Module):
         hist_item_emb = self.item_embeddings(history_item_ids)  # (B, L, H)
         hist_item_emb = torch.sigmoid(self.history_item_proj(hist_item_emb))  # (B, L, H)
 
-        # Base user embedding: same vector repeated for all examples in batch.
-        # Shape (1, H) -> (B, H)
-        u_base = self.user_embedding.weight[0].unsqueeze(0).expand(batch_size, -1)
+        u_base = user_embedding.reshape(-1).unsqueeze(0).expand(batch_size, -1)
 
         if neighbor_embeddings is not None:
             # neighbor_embeddings: (B, L, N, H)

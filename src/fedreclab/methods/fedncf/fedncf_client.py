@@ -3,17 +3,23 @@
 Source : Perifanis, Vasileios, and Pavlos S. Efraimidis. “Federated Neural Collaborative Filtering.”
 Knowledge-Based Systems 242 (April 2022): 108441. https://doi.org/10.1016/j.knosys.2022.108441.
 
-Implements BaseClientAlgorithm with three responsibilities:
-  1. initialize_local_parameters: create per-client user embeddings, model, and optimizer (both persisted across rounds in ClientState)
-  2. local_train: load latest server/user weights into the persistent model, train with negative sampling, return update packages
-  3. compute_scores: load weights into persistent model and score candidates
+ClientState holds only client-resident tensors (the two user embedding tables)
+plus a name-keyed optimiser dict. The shared NCF skeleton lives on this
+algorithm object and is loaded from the server payload each call.
+
+optimizer_state_scope:
+  - "client_resident" (default): persist Adam moments for user tables only
+  - "none": no optimiser state is kept
+  - "all": persist moments for every assembled parameter (memory-heavy)
 """
 
+import logging
 import time
 from typing import List, Dict, Tuple, Union, Any
 
 import numpy as np
 import torch
+from torch import nn
 
 from src.fedreclab.federated.base_client import (
     BaseClientAlgorithm,
@@ -21,8 +27,25 @@ from src.fedreclab.federated.base_client import (
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+from src.fedreclab.federated.utils import (
+    ParamIO,
+    UpdatePackage,
+    assert_client_names_disjoint,
+    assert_skeleton_server_coverage,
+    extract_named_optimizer_state,
+    flatten_grouped_state,
+    restore_named_optimizer_state,
+)
 from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
+
+logger = logging.getLogger(__name__)
+
+_CLIENT_TENSOR_NAMES = (
+    "gmf_user_embeddings.weight",
+    "mlp_user_embeddings.weight",
+)
+_OPTIMIZER_STATE_SCOPES = ("client_resident", "none", "all")
+_ALL_SCOPE_WARN_BYTES = 1 << 30
 
 
 class FedNCFClientAlgorithm(BaseClientAlgorithm):
@@ -34,14 +57,37 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         lr: float = 5e-4,
         batch_size: int = 128,
         neg_samples: int = 3,
+        optimizer_state_scope: str = "client_resident",
     ):
         super().__init__()
+        if optimizer_state_scope not in _OPTIMIZER_STATE_SCOPES:
+            raise ValueError(
+                f"optimizer_state_scope must be one of {_OPTIMIZER_STATE_SCOPES}, "
+                f"got {optimizer_state_scope!r}"
+            )
         self.predictive_factor = predictive_factor
         self.local_epochs = local_epochs
         self.lr = lr
         self.batch_size = batch_size
         self.neg_samples = neg_samples
+        self.optimizer_state_scope = optimizer_state_scope
         self.num_items = None
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._skeleton: NeuralCollaborativeFiltering | None = None
+        self._warned_all_scope = False
+
+    def init_model_skeleton(self):
+        if self._skeleton is not None:
+            return
+        if self.num_items is None:
+            raise RuntimeError("init_model_skeleton requires num_items to be set")
+        self._skeleton = NeuralCollaborativeFiltering(
+            num_items=self.num_items,
+            predictive_factor=self.predictive_factor,
+        ).to(self._device)
+        server_names = set(flatten_grouped_state(self._skeleton.get_server_state_groups()))
+        assert_skeleton_server_coverage(self._skeleton, server_names)
+        assert_client_names_disjoint(server_names, _CLIENT_TENSOR_NAMES)
 
     def initialize_local_parameters(
         self,
@@ -51,46 +97,46 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         num_items: int,
         client_train_data_view: Any,
         users_in_client: List[int],
-    ) -> Tuple[Dict[str, Any], torch.optim.Optimizer]:
+    ) -> Tuple[Dict[str, Any], None]:
         if self.num_items is None:
             self.num_items = num_items
+        self.init_model_skeleton()
+        self._maybe_warn_all_scope(total_num_users)
 
-        model = NeuralCollaborativeFiltering(num_users, num_items, self.predictive_factor)
-        optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
+        dim = 2 * self.predictive_factor
+        gmf_user = torch.empty(num_users, dim)
+        mlp_user = torch.empty(num_users, dim)
+        nn.init.normal_(gmf_user, std=0.01)
+        nn.init.normal_(mlp_user, std=0.01)
 
         user_id_to_local = {uid: idx for idx, uid in enumerate(users_in_client)}
-
         local_params = {
-            "user_embeddings": model.get_user_state(),
+            "user_embeddings": {
+                "gmf_user_embeddings.weight": gmf_user,
+                "mlp_user_embeddings.weight": mlp_user,
+            },
             "user_id_to_local": user_id_to_local,
-            "model": model,
         }
-        return local_params, optimizer
+        return local_params, None
 
     def local_train(self, training_request: ClientTrainingRequest) -> ClientTrainingResponse:
         t0 = time.time()
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.init_model_skeleton()
+        model = self._skeleton
+        device = self._device
 
         client_id = training_request.client_id
         client_state = training_request.client_state
         training_data = training_request.training_data
         user_id_to_local = client_state.local_parameters["user_id_to_local"]
 
-        # ---- 1. Reuse persistent model; load latest weights in-place ----
-        model = client_state.local_parameters["model"]
         model.load_server_weights(training_request.global_payload)
-        model.load_user_weights(client_state.local_parameters["user_embeddings"])
         model.join_output_weights()
-        model = model.to(device)
+        model.train()
 
-        optimizer = client_state.optimizer_state
-        if not isinstance(optimizer, torch.optim.Optimizer):
-            optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
-            if client_state.optimizer_state is not None:
-                try:
-                    optimizer.load_state_dict(client_state.optimizer_state)
-                except ValueError:
-                    pass
+        named_params, gmf_user, mlp_user = self._inject_user_parameters(client_state)
+        optimizer = torch.optim.Adam(list(model.parameters()) + [gmf_user, mlp_user], lr=self.lr)
+        restore_named_optimizer_state(optimizer, named_params, client_state.optimizer_state)
 
         user_col, item_col = "user_id", "item_id"
         rating_col = "rating" if "rating" in training_data.columns else None
@@ -105,7 +151,6 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         for local_uid, iid in zip(pos_local_uids, pos_item_ids):
             user_pos_items.setdefault(local_uid, set()).add(iid)
 
-        model.train()
         all_losses: List[float] = []
         num_training_examples = 0
 
@@ -126,7 +171,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
                 bx = torch.tensor(samples_x[start:start + self.batch_size], dtype=torch.long, device=device)
                 by = torch.tensor(samples_y[start:start + self.batch_size], dtype=torch.float32, device=device)
 
-                preds = model(bx)
+                preds = model(bx, gmf_user, mlp_user)
                 loss = torch.nn.functional.mse_loss(preds, by)
 
                 optimizer.zero_grad()
@@ -139,7 +184,6 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
             if num_batches > 0:
                 all_losses.append(epoch_loss / num_batches)
 
-        model = model.cpu()
         server_groups = model.get_server_state_groups()
 
         updates_packages = {}
@@ -154,11 +198,13 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         updated_state = ClientStateBase(
             client_id=client_id,
             local_parameters={
-                "user_embeddings": model.get_user_state(),
+                "user_embeddings": {
+                    "gmf_user_embeddings.weight": gmf_user.detach().cpu().clone(),
+                    "mlp_user_embeddings.weight": mlp_user.detach().cpu().clone(),
+                },
                 "user_id_to_local": user_id_to_local,
-                "model": model,
             },
-            optimizer_state=optimizer,
+            optimizer_state=self._scoped_optimizer_state(optimizer, named_params),
         )
 
         return ClientTrainingResponse(
@@ -217,14 +263,14 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         client_state: ClientStateBase,
         extra_payload: Dict[str, Any],
     ) -> Tuple[Dict[int, np.ndarray], float]:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.init_model_skeleton()
+        model = self._skeleton
+        device = self._device
         user_id_to_local = client_state.local_parameters["user_id_to_local"]
 
-        model = client_state.local_parameters["model"]
         model.load_server_weights(global_parameters)
-        model.load_user_weights(client_state.local_parameters["user_embeddings"])
         model.join_output_weights()
-        model = model.to(device)
+        _, gmf_user, mlp_user = self._inject_user_parameters(client_state)
         model.eval()
 
         scores: Dict[int, np.ndarray] = {}
@@ -238,6 +284,41 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
                 item_ids = torch.tensor(candidate_items, dtype=torch.long, device=device)
                 x = torch.stack([user_ids, item_ids], dim=1)
 
-                scores[user_id] = model(x).cpu().numpy()
+                scores[user_id] = model(x, gmf_user, mlp_user).cpu().numpy()
 
         return scores, 0.0
+
+    def _inject_user_parameters(self, client_state: ClientStateBase):
+        user_state = client_state.local_parameters["user_embeddings"]
+        gmf_user = nn.Parameter(
+            torch.as_tensor(user_state["gmf_user_embeddings.weight"], device=self._device).clone()
+        )
+        mlp_user = nn.Parameter(
+            torch.as_tensor(user_state["mlp_user_embeddings.weight"], device=self._device).clone()
+        )
+        named_params = {n: p for n, p in self._skeleton.named_parameters()}
+        named_params["gmf_user_embeddings.weight"] = gmf_user
+        named_params["mlp_user_embeddings.weight"] = mlp_user
+        return named_params, gmf_user, mlp_user
+
+    def _scoped_optimizer_state(self, optimizer, named_params):
+        if self.optimizer_state_scope == "none":
+            return None
+        names_to_keep = None
+        if self.optimizer_state_scope == "client_resident":
+            names_to_keep = _CLIENT_TENSOR_NAMES
+        return extract_named_optimizer_state(optimizer, named_params, names_to_keep)
+
+    def _maybe_warn_all_scope(self, num_clients: int):
+        if self.optimizer_state_scope != "all" or self._warned_all_scope:
+            return
+        self._warned_all_scope = True
+        n_params = sum(p.numel() for p in self._skeleton.parameters())
+        bytes_est = n_params * 2 * 4 * max(num_clients, 1)
+        if bytes_est >= _ALL_SCOPE_WARN_BYTES:
+            logger.warning(
+                "optimizer_state_scope='all' stores Adam moments for every server "
+                "parameter on every client (~%.1f GiB estimated). This is memory-heavy; "
+                "prefer 'client_resident' unless you have a state store.",
+                bytes_est / _ALL_SCOPE_WARN_BYTES,
+            )
