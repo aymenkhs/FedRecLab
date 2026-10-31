@@ -1054,29 +1054,42 @@ class BaseFederatedServer:
             return self._early_stopping_with_patience(current_round)
 
     def _initialize_early_stopping(self):
-        if not self.early_stopping_custom:
-            self.early_stopping_best_round = None
-            self._early_stopping_patience = 0
 
-            if self.early_stopping_parameters is None:
-                self.early_stopping_parameters = {}
 
-            if self.early_stopping_parameters.get("metric") is None:
-                self.early_stopping_parameters["metric"] = "loss"
-            if self.early_stopping_parameters.get("threshold") is None:
-                self.early_stopping_parameters["threshold"] = 0
-            if self.early_stopping_parameters.get("patience") is None:
-                self.early_stopping_parameters["patience"] = 5
-            if self.early_stopping_parameters.get("direction") is None:
-                if self.early_stopping_parameters["metric"] == "loss":
-                    self.early_stopping_parameters["direction"] = "min"
-                else:
-                    self.early_stopping_parameters["direction"] = "max"
+        if self.early_stopping_custom:
+            return
 
-            if self.early_stopping_parameters["direction"] == "min":
-                self.early_stopping_best_result = float('inf')
-            else:
-                self.early_stopping_best_result = float('-inf')
+        self.early_stopping_best_round = None
+        self._early_stopping_patience = 0
+
+        if self.early_stopping_parameters is None:
+            self.early_stopping_parameters = {}
+
+        metric = self.early_stopping_parameters.get("metric")
+        if self.early_stopping:
+            if not metric:
+                raise ValueError(
+                    "early_stopping=True requires early_stopping_parameters['metric'] "
+                    "to name a ranking result (for example 'ndcg@10'). Ranking "
+                    "evaluation does not produce a loss."
+                )
+            if metric == "loss":
+                raise ValueError(
+                    "early_stopping metric 'loss' is not produced by ranking "
+                    "evaluation. Pass a stored ranking key such as 'ndcg@10'."
+                )
+
+        if self.early_stopping_parameters.get("threshold") is None:
+            self.early_stopping_parameters["threshold"] = 0
+        if self.early_stopping_parameters.get("patience") is None:
+            self.early_stopping_parameters["patience"] = 5
+        if self.early_stopping_parameters.get("direction") is None:
+            self.early_stopping_parameters["direction"] = "max"
+
+        if self.early_stopping_parameters["direction"] == "min":
+            self.early_stopping_best_result = float("inf")
+        else:
+            self.early_stopping_best_result = float("-inf")
 
     def _early_stopping_metric_value(self) -> float:
         """Return the monitored validation metric as a comparable scalar.

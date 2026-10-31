@@ -73,7 +73,7 @@ class BaseClientAlgorithm:
         global_parameters: Dict[str, Any],
         client_state: ClientStateBase,
         extra_payload: Dict[str, Any],
-    ) -> Tuple[Dict[int, np.ndarray], float]:
+    ) -> Dict[int, np.ndarray]:
         raise NotImplementedError("Subclasses must implement this method")
 
     def apply_privacy(

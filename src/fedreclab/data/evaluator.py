@@ -338,7 +338,6 @@ class FullRankingEvaluator(Evaluator):
             raise ValueError(f"Invalid split: {split}")
 
         metrics_results_per_user = {}
-        losses = []
 
         for client_id, client_state in client_states.items():
 
@@ -364,14 +363,13 @@ class FullRankingEvaluator(Evaluator):
                 for user_id in eval_items_per_user
             }
 
-            scores, loss = self.client_algorithm.compute_scores(
+            scores = self.client_algorithm.compute_scores(
                 client_id=client_id,
                 candidate_items_per_user=candidate_items_per_user,
                 global_parameters=global_parameters,
                 client_state=client_state,
                 extra_payload=extra_payload,
             )
-            losses.append(loss)
 
             for user_id, eval_items in eval_items_per_user.items():
                 candidate_items = candidate_items_per_user[user_id]
@@ -394,8 +392,6 @@ class FullRankingEvaluator(Evaluator):
                 metric_results[metric] = self.compute_confidence_interval(metric_per_user_values)
             else:
                 metric_results[metric] = np.mean(metric_per_user_values)
-
-        metric_results["loss"] = np.mean(losses)
 
         if self.logging_callback:
             self.logging_callback(current_round, metric_results, split, extra_payload)

@@ -288,7 +288,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         global_parameters: Dict[str, Any],
         client_state: ClientStateBase,
         extra_payload: Dict[str, Any],
-    ) -> Tuple[Dict[int, np.ndarray], float]:
+    ) -> Dict[int, np.ndarray]:
         self.init_model_skeleton()
         model = self._skeleton
         device = self._device
@@ -312,7 +312,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
 
                 scores[user_id] = model(x, gmf_user, mlp_user).cpu().numpy()
 
-        return scores, 0.0
+        return scores
 
     def _inject_user_parameters(self, client_state: ClientStateBase):
         user_state = client_state.local_parameters["user_embeddings"]
