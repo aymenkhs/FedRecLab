@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Sequence
+from dataclasses import replace
 
 import numpy as np
 import torch
@@ -52,9 +53,78 @@ def _ensure_same_dict_keys(per_client: Sequence[dict]) -> list[str]:
     return sorted(keys0)
 
 
+def _require_finite(arr: np.ndarray, where: str) -> None:
+    if not np.isfinite(arr).all():
+        raise ValueError(f"Non-finite values in {where}")
+
+
+def _masked_weighted_mean(
+    values: np.ndarray | dict,
+    mask: np.ndarray,
+    weights: np.ndarray,
+) -> np.ndarray | dict:
+    """Weighted mean over clients that have a row, renormalised per row.
+
+    ``values`` is ``(n, k, d)`` or a dict of those. ``mask`` is ``(n, k)``.
+    ``weights`` is ``(n,)`` unnormalised. NaNs in ``values`` fail loudly;
+    the mask is boolean, not encoded as NaN.
+    """
+    if isinstance(values, dict):
+        return {
+            key: _masked_weighted_mean(val, mask, weights)
+            for key, val in values.items()
+        }
+    values = np.asarray(values)
+    _require_finite(values, "row-aggregation values")
+    n, k = mask.shape
+    w = np.asarray(weights, dtype=np.float64).reshape(n, 1) * mask.astype(np.float64)
+    w_sum = w.sum(axis=0)
+    if np.any(w_sum <= 0):
+        raise ValueError("A packed row has no contributing client with positive weight")
+    w_norm = w / w_sum.reshape(1, k)
+    return np.sum(values * w_norm.reshape(n, k, 1), axis=0)
+
+
+def _masked_nanmedian(values: np.ndarray | dict, mask: np.ndarray) -> np.ndarray | dict:
+    """Coordinate-wise median over contributing clients.
+
+    Masked-out entries are NaN only for ``nanmedian``; real NaNs in ``values``
+    still fail before that.
+    """
+    if isinstance(values, dict):
+        return {key: _masked_nanmedian(val, mask) for key, val in values.items()}
+    values = np.asarray(values)
+    _require_finite(values, "row-aggregation values")
+    filled = np.where(mask[..., None], values, np.nan)
+    return np.nanmedian(filled, axis=0)
+
+
+def _slice_round_info_for_clients(
+    round_info: RoundStatistics,
+    client_ids: list[int],
+) -> RoundStatistics:
+    return replace(
+        round_info,
+        selected=list(client_ids),
+        responded=list(client_ids),
+        dropped=[],
+        num_training_examples={
+            cid: round_info.num_training_examples[cid] for cid in client_ids
+        },
+        training_losses={
+            cid: round_info.training_losses[cid] for cid in client_ids
+        },
+        training_durations={
+            cid: round_info.training_durations[cid] for cid in client_ids
+        },
+    )
+
+
 class BaseAggregation:
     def __init__(self, num_clients: int):
         self.num_clients = num_clients
+        self.row_fallback_count = 0
+        self._last_call_fell_back = False
 
     def aggregate(
         self,
@@ -64,6 +134,82 @@ class BaseAggregation:
         param_io: ParamIO,
     ):
         raise NotImplementedError("Subclasses must implement this method")
+
+    def aggregate_rows(
+        self,
+        round_info: RoundStatistics,
+        previous_rows: Any,
+        values: np.ndarray | dict,
+        mask: np.ndarray,
+        param_io: ParamIO,
+    ):
+        """Aggregate packed row updates.
+
+        Default: one ``aggregate()`` call per union row, over the clients
+        that sent it. Mean-family aggregators and Median override this with
+        a vectorised masked reduce.
+
+        ``values`` / ``mask`` cover the union of rows uploaded this round
+        (shape ``n × k_union × d``), not necessarily the full catalogue.
+
+        Parameters
+        ----------
+        round_info : RoundStatistics
+            Statistics aligned with axis 0 of ``values`` (``selected`` order).
+        previous_rows : array or dict of arrays
+            Previous table rows at the union indices, shape ``(k, d)``.
+        values : array or dict of arrays
+            Packed client rows, shape ``(n, k, d)``.
+        mask : ndarray of bool, shape (n, k)
+            True where that client uploaded the column's row id.
+        param_io : ParamIO
+            Group declaration (unused by the default loop).
+
+        Returns
+        -------
+        ndarray or dict of ndarray
+            Aggregated rows, shape ``(k, d)``.
+        """
+        self.row_fallback_count = 0
+        n, k = mask.shape
+        selected = list(round_info.selected)
+        if len(selected) != n:
+            raise ValueError(
+                f"round_info.selected length {len(selected)} != packed n={n}"
+            )
+        is_dict = isinstance(values, dict)
+        keys = list(values.keys()) if is_dict else None
+        out_cols: list[Any] = []
+        for j in range(k):
+            contrib = np.flatnonzero(mask[:, j])
+            if contrib.size == 0:
+                raise ValueError("Packed union contains a row with no contributors")
+            client_ids = [selected[int(i)] for i in contrib]
+            row_info = _slice_round_info_for_clients(round_info, client_ids)
+            if is_dict:
+                updates = [
+                    {key: np.asarray(values[key][int(i), j]) for key in keys}
+                    for i in contrib
+                ]
+                prev = {key: np.asarray(previous_rows[key][j]) for key in keys}
+            else:
+                updates = [np.asarray(values[int(i), j]) for i in contrib]
+                prev = np.asarray(previous_rows[j])
+            self._last_call_fell_back = False
+            aggregated = self.aggregate(row_info, prev, updates, param_io)
+            if self._last_call_fell_back:
+                self.row_fallback_count += 1
+            if is_dict:
+                aggregated = {key: _to_numpy(aggregated[key]) for key in keys}
+            else:
+                aggregated = _to_numpy(aggregated)
+            out_cols.append(aggregated)
+        if is_dict:
+            return {
+                key: np.stack([col[key] for col in out_cols], axis=0)
+                for key in keys
+            }
+        return np.stack(out_cols, axis=0)
 
     def _to_torch_like(self, arr: np.ndarray, like: torch.Tensor) -> torch.Tensor:
         """Preserve input dtype/device when returning torch outputs."""
@@ -78,8 +224,10 @@ class BaseAggregation:
 
 class FedAvg(BaseAggregation):
     """
-    Federated averaging (versatile for FedMF, FedNCF, FedPerGNN, etc.).
-
+    Weighted average of client updates, weighted by num_training_examples.
+    
+    Works with any method: for row-layout groups (ParamIO.layout="rows") the 
+    server applies it per row, over the clients that updated that row.
     Supports both single-tensor and dict-of-tensor (state-dict) parameter values.
     For dict values, each key's tensors are averaged independently.
     """
@@ -145,6 +293,27 @@ class FedAvg(BaseAggregation):
 
         return self._aggregate_with_weights(updates, weights)
 
+    def aggregate_rows(
+        self,
+        round_info: RoundStatistics,
+        previous_rows: Any,
+        values: np.ndarray | dict,
+        mask: np.ndarray,
+        param_io: ParamIO,
+    ):
+        self.row_fallback_count = 0
+        selected = list(round_info.selected)
+        n = mask.shape[0]
+        if len(selected) != n:
+            raise ValueError(
+                f"round_info.selected length {len(selected)} != packed n={n}"
+            )
+        weights = np.array(
+            [round_info.num_training_examples[c] for c in selected],
+            dtype=np.float64,
+        )
+        return _masked_weighted_mean(values, mask, weights)
+
 
 class SimpleAvg(FedAvg):
     def __init__(self, num_clients, **kwargs):
@@ -161,6 +330,19 @@ class SimpleAvg(FedAvg):
         n = len(per_client)
         weights = np.ones(n, dtype=np.float64) / n
         return self._aggregate_with_weights(updates, weights)
+
+    def aggregate_rows(
+        self,
+        round_info: RoundStatistics,
+        previous_rows: Any,
+        values: np.ndarray | dict,
+        mask: np.ndarray,
+        param_io: ParamIO,
+    ):
+        self.row_fallback_count = 0
+        n = mask.shape[0]
+        weights = np.ones(n, dtype=np.float64)
+        return _masked_weighted_mean(values, mask, weights)
 
 
 class Median(BaseAggregation):
@@ -191,6 +373,17 @@ class Median(BaseAggregation):
         med = np.median(np.stack(vals, axis=0), axis=0)
         like0 = per_client[0]
         return self._to_torch_like(med, like0) if isinstance(like0, torch.Tensor) else med
+
+    def aggregate_rows(
+        self,
+        round_info: RoundStatistics,
+        previous_rows: Any,
+        values: np.ndarray | dict,
+        mask: np.ndarray,
+        param_io: ParamIO,
+    ):
+        self.row_fallback_count = 0
+        return _masked_nanmedian(values, mask)
 
 
 class TrimmedMean(BaseAggregation):
@@ -379,8 +572,10 @@ class Krum(BaseAggregation):
         X = np.stack([_flatten_update(u).astype(np.float64, copy=False) for u in per_client], axis=0)
         n = X.shape[0]
         f = self.num_byzantine
+        self._last_call_fell_back = False
         if n < 2 * f + 3:
             # Too few clients for Krum's theoretical guarantee; fall back to simple average.
+            self._last_call_fell_back = True
             weights = np.ones(n, dtype=np.float64) / float(n)
             return FedAvg(self.num_clients)._aggregate_with_weights(per_client, weights)
 
@@ -425,8 +620,10 @@ class Bulyan(BaseAggregation):
 
         n = len(per_client)
         f = self.num_byzantine
+        self._last_call_fell_back = False
         if n < 4 * f + 3:
             # Too few clients for Bulyan; fall back to simple average.
+            self._last_call_fell_back = True
             weights = np.ones(n, dtype=np.float64) / float(n)
             return FedAvg(self.num_clients)._aggregate_with_weights(per_client, weights)
 

@@ -62,22 +62,46 @@ class FedPerGNNModel(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def get_server_state(self) -> dict:
-        """Return every skeleton parameter and buffer (server-resident)."""
-        state: dict[str, torch.Tensor] = {
-            k: v.detach().cpu().clone() for k, v in self.named_parameters()
-        }
+    ITEM_EMBEDDING_NAME = "item_embeddings.weight"
+
+    def get_model_state(self) -> dict:
+        """Server-resident tensors excluding the item embedding table."""
+        state: dict[str, torch.Tensor] = {}
+        for k, v in self.named_parameters():
+            if k == self.ITEM_EMBEDDING_NAME:
+                continue
+            state[k] = v.detach().cpu().clone()
         for k, v in self.named_buffers():
+            if k == self.ITEM_EMBEDDING_NAME:
+                continue
             state[k] = v.detach().cpu().clone()
         return state
 
+    def get_item_embeddings(self) -> torch.Tensor:
+        return self.item_embeddings.weight.data.detach().cpu().clone()
+
+    def get_server_state(self) -> dict:
+        """Every skeleton parameter and buffer, including the item table."""
+        state = self.get_model_state()
+        state[self.ITEM_EMBEDDING_NAME] = self.get_item_embeddings()
+        return state
+
     def load_server_state(self, server_state: dict) -> None:
-        """Load server-side parameters from a dict produced by get_server_state()."""
+        """Load non-item server tensors from ``get_model_state()``."""
+        self._load_named(server_state, exclude={self.ITEM_EMBEDDING_NAME})
+
+    def load_item_embeddings(self, table) -> None:
+        """Load the item table from a full ``(|I|, d)`` tensor or ndarray."""
+        weight = self.item_embeddings.weight
+        tensor = table if isinstance(table, torch.Tensor) else torch.as_tensor(table)
+        weight.data.copy_(tensor.to(device=weight.device, dtype=weight.dtype))
+
+    def _load_named(self, server_state: dict, exclude: set[str]) -> None:
         def as_tensor(x):
             return x if isinstance(x, torch.Tensor) else torch.as_tensor(x)
 
-        named = {n: p for n, p in self.named_parameters()}
-        named.update({n: b for n, b in self.named_buffers()})
+        named = {n: p for n, p in self.named_parameters() if n not in exclude}
+        named.update({n: b for n, b in self.named_buffers() if n not in exclude})
         missing = set(named) - set(server_state)
         extra = set(server_state) - set(named)
         if missing or extra:

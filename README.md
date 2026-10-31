@@ -12,7 +12,7 @@ FedRec papers ship code in different frameworks, with different splits, client p
 
 - **Data:** one interaction table as the single source of truth; ID remapping; k-core filtering; ratio and stratified (optionally chronological) splits; cross-device client partitioning. Datasets via [Cornac](https://cornac.preferred.ai/) or any pandas DataFrame.
 - **Federated core:** a round loop with hooks; per-parameter-group exchange rules (`ParamIO`); pluggable client selection and aggregation.
-- **Aggregators:** FedAvg, SimpleAvg, Median, TrimmedMean, FedAtt, Krum / Multi-Krum, Bulyan.
+- **Aggregators:** FedAvg, SimpleAvg, Median, TrimmedMean, FedAtt, Krum / Multi-Krum, Bulyan. Row-layout groups (`ParamIO.layout="rows"`) apply the same aggregator per embedding row.
 - **Evaluation:** full-ranking top-K metrics (HR, NDCG, Precision, Recall, …) computed per client.
 - **Methods:** FedNCF. FedPerGNN is being repaired; CdFed, FedMF, MetaMF, FedVAE, GPFedRec and SemiDFEGL are planned.
 
@@ -34,7 +34,7 @@ from src.fedreclab.data.split import StratifiedSplitStrategy
 from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
 from src.fedreclab.data.evaluator import FullRankingEvaluator
 from src.fedreclab.federated.client_selection import RandomClientSelection
-from src.fedreclab.federated.aggregation import SimpleAvg
+from src.fedreclab.federated.aggregation import FedAvg, SimpleAvg
 from src.fedreclab.methods.fedncf.fedncf import FedNCF
 from src.fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
 
@@ -58,7 +58,11 @@ server = FedNCF(
     client_algorithm=client,
     num_rounds=100,
     client_selection_strategy=RandomClientSelection(dataset.num_clients, 0.02, "frac"),
-    aggregation_strategies=SimpleAvg(num_clients=dataset.num_clients),
+    aggregation_strategies={
+        "item_embeddings": SimpleAvg(num_clients=dataset.num_clients),
+        "shared_layers": FedAvg(num_clients=dataset.num_clients),
+        "output_weights": FedAvg(num_clients=dataset.num_clients),
+    },
     evaluator=evaluator,
     early_stopping=True,
     early_stopping_parameters={"metric": "ndcg@10", "direction": "max", "patience": 10},

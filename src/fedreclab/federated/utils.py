@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from torch import nn
@@ -300,13 +300,28 @@ class RoundStatistics:
     num_training_examples: Dict[int, int]
     training_losses: Dict[int, List[float]]
     training_durations: Dict[int, float]
+    # param_name -> number of rows that fell back from Krum/Bulyan to averaging
+    row_aggregator_fallbacks: Dict[str, int] = field(default_factory=dict)
+
+
+_VALID_LAYOUTS = ("dense", "rows")
 
 
 class ParamIO:
-    def __init__(self, residency, exchange, apply_to):
+    def __init__(self, residency, exchange, apply_to, layout="dense"):
+        if layout not in _VALID_LAYOUTS:
+            raise ValueError(
+                f"ParamIO.layout must be one of {_VALID_LAYOUTS}, got {layout!r}"
+            )
         self.residency = residency
         self.exchange = exchange
         self.apply_to = apply_to
+        self.layout = layout
+
+
+def is_row_update(value: Any) -> bool:
+    """True if ``value`` is a sparse row upload ``{"rows", "values"}``."""
+    return isinstance(value, dict) and "rows" in value and "values" in value
 
 
 @dataclass

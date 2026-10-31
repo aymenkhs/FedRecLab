@@ -1,4 +1,3 @@
-from collections import defaultdict
 from typing import Dict, Any, List, Optional
 
 import numpy as np
@@ -9,19 +8,35 @@ from src.fedreclab.federated.utils import ParamIO
 from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
+def default_param_ios() -> dict[str, ParamIO]:
+    return {
+        "model_state": ParamIO(
+            residency="server", exchange="params", apply_to="server",
+        ),
+        "item_embeddings": ParamIO(
+            residency="server", exchange="params", apply_to="server", layout="rows",
+        ),
+        "user_embeddings": ParamIO(
+            residency="server", exchange="params", apply_to="server", layout="rows",
+        ),
+    }
+
+
 class FedPerGNN(BaseFederatedServer):
     """Federated GNN personalization (Wu et al., 2022).
+
+    Item and user embedding tables are row-layout groups. The configured
+    aggregator runs over the clients that uploaded each row (equal mix when
+    several neighbour proposals share a row). Owner ClientState is not
+    overwritten by the mirror.
 
     Simulation shortcuts:
       The server holds a canonical user-embedding table used as an expansion
       mirror (neighbour lookup). Each client's own embedding lives in
-      ClientState and is uploaded every round so the table stays a copy of
-      last-round owner rows plus neighbour proposals. user_embeddings_aggregate
-      chooses how neighbour proposals for a row are combined into that mirror;
-      it does not write back into the owner's ClientState.
-      neighbor_embeddings_trainable still lets other clients propose edits to
-      your row in the mirror; those edits no longer become your next local
-      starting point.
+      ClientState and is uploaded every round. neighbour_embeddings_trainable
+      still lets other clients propose edits to your row in the mirror; those
+      edits no longer become your next local starting point. Plaintext sparse
+      item uploads reveal which items this client trained on.
     """
     def __init__(
         self,
@@ -30,7 +45,6 @@ class FedPerGNN(BaseFederatedServer):
         neighbor_len: int = 10,
         warmup_rounds: int = 1,
         neighbor_embeddings_trainable: bool = False,
-        user_embeddings_aggregate: bool = False,
         expanded_users: Optional[Dict[int, np.ndarray]] = None,
         history_item_ids: Optional[Dict[int, np.ndarray]] = None,
         expansion_seed: int = 42,
@@ -41,9 +55,8 @@ class FedPerGNN(BaseFederatedServer):
         self.neighbor_len = neighbor_len
         self.warmup_rounds = warmup_rounds
 
-        # Flags: neighbor_embeddings_trainable applies only to neighbor rows; central user is always trainable.
+        # neighbor_embeddings_trainable applies only to neighbor rows; central user is always trainable.
         self.neighbor_embeddings_trainable = neighbor_embeddings_trainable
-        self.user_embeddings_aggregate = user_embeddings_aggregate
 
         # Optional externally-provided expansion structure
         self._provided_neighbor_user_ids = expanded_users
@@ -58,23 +71,7 @@ class FedPerGNN(BaseFederatedServer):
         self._item_to_users: Dict[int, np.ndarray] = {}
         self._user_to_items: Dict[int, np.ndarray] = {}
 
-        # One logical parameter group for all server-side model parameters.
-        param_ios = {
-            "model_state": ParamIO(
-                residency="server",
-                exchange="params",
-                apply_to="server",
-            ),
-            # Expansion mirror of user embeddings. apply_to="custom" scatters
-            # (or per-user aggregates) sparse client uploads; owners train from ClientState.
-            "user_embeddings": ParamIO(
-                residency="server",
-                exchange="params",
-                apply_to="custom",
-            ),
-        }
-
-        super().__init__(param_ios=param_ios, **kwargs)
+        super().__init__(param_ios=default_param_ios(), **kwargs)
 
     def _initialize_server_parameters(self) -> Dict[str, Any]:
         """
@@ -89,20 +86,21 @@ class FedPerGNN(BaseFederatedServer):
             history_len=self.history_len,
             neighbor_len=self.neighbor_len,
         )
-        server_state = model.get_server_state()
-
-        # Ensure everything is converted to numpy for aggregation backends.
+        model_state = model.get_model_state()
         numpy_state: Dict[str, Any] = {
             k: (v.detach().cpu().numpy() if hasattr(v, "detach") else np.asarray(v))
-            for k, v in server_state.items()
+            for k, v in model_state.items()
         }
+        item_embeddings = np.asarray(model.get_item_embeddings(), dtype=np.float32)
 
-        # Canonical user embedding table on server (used for expansion). Not aggregated yet.
         rng = np.random.default_rng(self.expansion_seed)
-        user_embeddings = rng.normal(0.0, 0.01, size=(self.interaction_dataset.num_users, self.hidden_dim)).astype(np.float32)
+        user_embeddings = rng.normal(
+            0.0, 0.01, size=(self.interaction_dataset.num_users, self.hidden_dim)
+        ).astype(np.float32)
 
         return {
             "model_state": numpy_state,
+            "item_embeddings": item_embeddings,
             "user_embeddings": user_embeddings,
         }
 
@@ -264,207 +262,5 @@ class FedPerGNN(BaseFederatedServer):
                 "neighbor_embeddings": neigh_emb,
                 "neighbor_user_ids": neigh_ids,
             }
-
-    def _parse_user_embedding_update(
-        self,
-        client_id: int,
-        value: Any,
-        n_users: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Parse one client's sparse user-embedding upload.
-
-        Parameters
-        ----------
-        client_id : int
-            Sender, used in error messages.
-        value : any
-            Expected ``{"user_ids": array, "embeddings": array}``.
-        n_users : int
-            Rows in the server embedding table.
-
-        Returns
-        -------
-        user_ids : ndarray of int64, shape (k,)
-            Uploaded user indices.
-        embeddings : ndarray of float32, shape (k, hidden_dim)
-            Rows aligned with ``user_ids``.
-
-        Raises
-        ------
-        ValueError
-            If ``value`` is not a dict with ``user_ids`` and ``embeddings``.
-        IndexError
-            If any uploaded id is outside ``[0, n_users)``.
-
-        Examples
-        --------
-        >>> ids, emb = server._parse_user_embedding_update(
-        ...     0, {"user_ids": np.array([1]), "embeddings": np.zeros(8)}, 3
-        ... )
-        >>> ids.tolist()
-        [1]
-        """
-        if not (isinstance(value, dict) and "user_ids" in value and "embeddings" in value):
-            raise ValueError(
-                f"Client {client_id} user_embeddings update must be a dict "
-                f"with 'user_ids' and 'embeddings', got "
-                f"{type(value).__name__}: {value!r}"
-            )
-        user_ids = np.asarray(value["user_ids"], dtype=np.int64)
-        embeddings = np.asarray(value["embeddings"], dtype=np.float32)
-        if embeddings.ndim == 1:
-            embeddings = embeddings.reshape(1, -1)
-        for u in user_ids:
-            u_int = int(u)
-            if u_int < 0 or u_int >= n_users:
-                raise IndexError(
-                    f"Client {client_id} uploaded user_id={u_int} which is "
-                    f"outside the embedding table [0, {n_users})"
-                )
-        return user_ids, embeddings
-
-    def _aggregate_user_embeddings(
-        self,
-        updates: List[Any],
-        participant_ids: List[int],
-    ) -> np.ndarray:
-        """Produce the updated canonical user_embeddings table.
-
-        When ``user_embeddings_aggregate`` is False, scatter each client's
-        ``(user_ids, embeddings)``. When True, group by user id, call the
-        configured aggregator per user, then scatter.
-
-        Parameters
-        ----------
-        updates : list
-            Sparse uploads, each ``{"user_ids", "embeddings"}``, aligned with
-            ``participant_ids``.
-        participant_ids : list of int
-            Clients that sent ``user_embeddings`` this round.
-
-        Returns
-        -------
-        ndarray
-            Copy of the server table with uploaded rows applied.
-
-        Raises
-        ------
-        ValueError
-            If an update is not a dict with ``user_ids`` and ``embeddings``.
-        IndexError
-            If an uploaded user id is outside the table.
-
-        Examples
-        --------
-        Scatter two rows from one client into a 3-user table::
-
-            table = server._aggregate_user_embeddings(
-                [{"user_ids": np.array([0, 1]), "embeddings": np.ones((2, H))}],
-                [0],
-            )
-        """
-        table = np.array(self.global_parameters["user_embeddings"], copy=True)
-        n_users = int(table.shape[0])
-        param_io = self.param_ios["user_embeddings"]
-        agg = self.aggregation_strategies["user_embeddings"]
-
-        updates_by_client: List[tuple] = []
-        for client_id, value in zip(participant_ids, updates):
-            user_ids, embeddings = self._parse_user_embedding_update(
-                client_id, value, n_users
-            )
-            updates_by_client.append((client_id, user_ids, embeddings))
-
-        if not updates_by_client:
-            return table
-
-        if not self.user_embeddings_aggregate:
-            for (_client_id, user_ids, embeddings) in updates_by_client:
-                for i, u in enumerate(user_ids):
-                    table[int(u)] = embeddings[i]
-            return table
-
-        per_user: Dict[int, List[tuple]] = defaultdict(list)
-        for (client_id, user_ids, embeddings) in updates_by_client:
-            for i, u in enumerate(user_ids):
-                per_user[int(u)].append(
-                    (client_id, np.asarray(embeddings[i], dtype=np.float32))
-                )
-
-        for user_id, contribs in per_user.items():
-            client_ids = [c[0] for c in contribs]
-            prev_row = np.asarray(table[user_id], dtype=np.float32)
-            aggregated_row = agg.aggregate(
-                self._round_statistics_for_participants(client_ids),
-                prev_row,
-                [c[1] for c in contribs],
-                param_io,
-            )
-
-            if hasattr(aggregated_row, "detach"):
-                aggregated_row = aggregated_row.detach().cpu().numpy()
-            else:
-                aggregated_row = np.asarray(aggregated_row, dtype=np.float32)
-            table[user_id] = aggregated_row
-
-        return table
-
-    def _aggregate_group(
-        self,
-        param_name: str,
-        param_io: ParamIO,
-        updates: List[Any],
-        participant_ids: List[int],
-    ) -> None:
-        """Scatter or per-user-aggregate ``user_embeddings``; default otherwise.
-
-        Parameters
-        ----------
-        param_name : str
-            ParamIO group being aggregated.
-        param_io : ParamIO
-            Declaration for ``param_name``.
-        updates : list
-            Per-participant values from ``_collect_updates``.
-        participant_ids : list of int
-            Clients aligned with ``updates``.
-
-        Returns
-        -------
-        None
-
-        Examples
-        --------
-        ``model_state`` uses the base path; ``user_embeddings`` does not::
-
-            server._aggregate_group("user_embeddings", param_io, updates, [0])
-        """
-        if param_name == "user_embeddings":
-            updated_table = self._aggregate_user_embeddings(
-                updates, participant_ids
-            )
-            self._apply_aggregated_result(
-                param_name=param_name,
-                aggregated_result=updated_table,
-                param_io=param_io,
-                selected_client_ids=participant_ids,
-            )
-            return
-        super()._aggregate_group(param_name, param_io, updates, participant_ids)
-
-    def _apply_aggregated_result_custom(
-        self,
-        param_name: str,
-        aggregated_result: Any,
-        param_io: ParamIO,
-        selected_client_ids: List[int],
-    ):
-        """Apply aggregated user_embeddings table to global_parameters."""
-        if param_name == "user_embeddings":
-            self.global_parameters["user_embeddings"] = aggregated_result
-            return
-        raise NotImplementedError(
-            f"Custom apply not implemented for parameter '{param_name}'"
-        )
 
 

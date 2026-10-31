@@ -16,7 +16,7 @@ from src.fedreclab.federated.base_client import (
 )
 from src.fedreclab.federated.client_selection import BaseClientSelection
 from src.fedreclab.federated.aggregation import BaseAggregation
-from src.fedreclab.federated.utils import RoundStatistics, ParamIO
+from src.fedreclab.federated.utils import RoundStatistics, ParamIO, is_row_update
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class BaseFederatedServer:
         early_stopping_callback: Callable | None = None,
         training_framework: str = "torch",
         device: str | None = None,
+        param_io_overrides: Dict[str, dict] | None = None,
     ):
         self.interaction_dataset = interaction_dataset
 
@@ -48,6 +49,8 @@ class BaseFederatedServer:
         self.client_algorithm = client_algorithm
 
         self.param_ios = param_ios
+        if param_io_overrides:
+            self._apply_param_io_overrides(param_io_overrides)
 
         self.early_stopping = early_stopping
         self.early_stopping_custom = early_stopping_custom
@@ -243,6 +246,7 @@ class BaseFederatedServer:
             validation_data=validation_data,
             global_payload=self._build_server_payload(client_id=client_id),
             extra_payload=self.extra_payload,
+            param_ios=self.param_ios,
         )
         training_response = self.client_algorithm.local_train(training_request)
         client_state = training_response.updated_client_state
@@ -478,6 +482,33 @@ class BaseFederatedServer:
 
             self._aggregate_group("item_embeddings", param_io, updates, [0, 1])
         """
+        self._assert_updates_match_layout(param_name, param_io, updates)
+
+        if param_io.layout == "rows":
+            if param_io.residency != "server":
+                raise ValueError(
+                    f"ParamIO.layout='rows' requires residency='server' "
+                    f"(got {param_io.residency!r} for '{param_name}')"
+                )
+            previous_parameters = self.global_parameters[param_name]
+            updated_table = self._aggregate_row_group(
+                param_name, param_io, previous_parameters, updates, participant_ids
+            )
+            # Exchange is already applied per row; assign the table as params.
+            apply_io = ParamIO(
+                residency=param_io.residency,
+                exchange="params",
+                apply_to=param_io.apply_to,
+                layout=param_io.layout,
+            )
+            self._apply_aggregated_result(
+                param_name=param_name,
+                aggregated_result=updated_table,
+                param_io=apply_io,
+                selected_client_ids=participant_ids,
+            )
+            return
+
         if param_io.residency == "server":
             previous_parameters = self.global_parameters[param_name]
         elif param_io.residency == "client":
@@ -507,6 +538,253 @@ class BaseFederatedServer:
             param_io=param_io,
             selected_client_ids=participant_ids,
         )
+
+    def _apply_param_io_overrides(self, overrides: Dict[str, dict]) -> None:
+        """Apply experiment-level field updates onto method ParamIO defaults."""
+        allowed = {"residency", "exchange", "apply_to", "layout"}
+        for name, fields in overrides.items():
+            if name not in self.param_ios:
+                raise ValueError(
+                    f"param_io_overrides refers to unknown group {name!r}; "
+                    f"known groups are {sorted(self.param_ios)}"
+                )
+            if not isinstance(fields, dict):
+                raise TypeError(
+                    f"param_io_overrides[{name!r}] must be a dict of ParamIO "
+                    f"fields, got {type(fields).__name__}"
+                )
+            unknown = set(fields) - allowed
+            if unknown:
+                raise ValueError(
+                    f"param_io_overrides[{name!r}] has unknown field(s) "
+                    f"{sorted(unknown)}; allowed: {sorted(allowed)}"
+                )
+            pio = self.param_ios[name]
+            for key, value in fields.items():
+                setattr(pio, key, value)
+            if pio.layout not in ("dense", "rows"):
+                raise ValueError(
+                    f"ParamIO.layout for '{name}' must be 'dense' or 'rows', "
+                    f"got {pio.layout!r}"
+                )
+
+    def _assert_updates_match_layout(
+        self,
+        param_name: str,
+        param_io: ParamIO,
+        updates: List[Any],
+    ) -> None:
+        """Reject uploads that do not match ``param_io.layout``."""
+        for update in updates:
+            row_shaped = is_row_update(update)
+            if param_io.layout == "rows" and not row_shaped:
+                raise ValueError(
+                    f"Group '{param_name}' has layout='rows' but an upload is "
+                    f"not {{'rows', 'values'}} (got {type(update).__name__})"
+                )
+            if param_io.layout == "dense" and row_shaped:
+                raise ValueError(
+                    f"Group '{param_name}' has layout='dense' but an upload "
+                    "uses the sparse {{'rows', 'values'}} format"
+                )
+
+    def _aggregate_row_group(
+        self,
+        param_name: str,
+        param_io: ParamIO,
+        previous_parameters: Any,
+        updates: List[Any],
+        participant_ids: List[int],
+    ) -> Any:
+        """Pack sparse uploads, aggregate union rows, apply exchange to those rows."""
+        packed = self._pack_row_updates(param_name, previous_parameters, updates)
+        if packed is None:
+            return previous_parameters
+        union_rows, values, mask, previous_rows = packed
+        aggregator = self.aggregation_strategies[param_name]
+        agg_rows = aggregator.aggregate_rows(
+            self._round_statistics_for_participants(participant_ids),
+            previous_rows,
+            values,
+            mask,
+            param_io,
+        )
+        fallbacks = int(getattr(aggregator, "row_fallback_count", 0) or 0)
+        if fallbacks:
+            stats = self.current_round_statistics
+            if stats is not None:
+                stats.row_aggregator_fallbacks[param_name] = fallbacks
+        return self._scatter_exchanged_rows(
+            param_name, param_io, previous_parameters, union_rows, agg_rows
+        )
+
+    def _pack_row_updates(
+        self,
+        param_name: str,
+        previous_parameters: Any,
+        updates: List[Any],
+    ):
+        """Build ``(n, k_union, d)`` values and mask from sparse uploads.
+
+        Returns None when every upload is empty (nothing to write).
+        """
+        parsed: List[tuple[np.ndarray, Any]] = []
+        for i, update in enumerate(updates):
+            rows = np.asarray(update["rows"], dtype=np.int64).reshape(-1)
+            values = update["values"]
+            if rows.size != len(np.unique(rows)):
+                raise ValueError(
+                    f"Group '{param_name}' upload {i} has duplicate row ids"
+                )
+            parsed.append((rows, values))
+
+        n_table, table_keys, prev_np = self._row_table_numpy(previous_parameters)
+        for i, (rows, _) in enumerate(parsed):
+            if rows.size and (np.any(rows < 0) or np.any(rows >= n_table)):
+                raise IndexError(
+                    f"Group '{param_name}' upload {i} has row ids outside "
+                    f"[0, {n_table})"
+                )
+
+        union = np.unique(np.concatenate([r for r, _ in parsed] + [np.array([], dtype=np.int64)]))
+        if union.size == 0:
+            return None
+        col_of = {int(r): j for j, r in enumerate(union)}
+        n_clients = len(parsed)
+        k = int(union.size)
+        mask = np.zeros((n_clients, k), dtype=bool)
+
+        first_values = parsed[0][1]
+        values_are_dict = isinstance(first_values, dict)
+        if values_are_dict:
+            if table_keys is None:
+                raise TypeError(
+                    f"Group '{param_name}' previous table is a tensor but "
+                    "uploads use dict values"
+                )
+            if set(first_values) != set(table_keys):
+                raise ValueError(
+                    f"Group '{param_name}' upload value keys {sorted(first_values)} "
+                    f"do not match table keys {sorted(table_keys)}"
+                )
+            stacked = {}
+            for key in table_keys:
+                d = int(prev_np[key].shape[1]) if prev_np[key].ndim > 1 else 1
+                stacked[key] = np.zeros((n_clients, k, d), dtype=np.float64)
+            for i, (rows, values) in enumerate(parsed):
+                if not isinstance(values, dict) or set(values) != set(table_keys):
+                    raise ValueError(
+                        f"Group '{param_name}' upload {i} value keys do not "
+                        f"match {sorted(table_keys)}"
+                    )
+                if rows.size == 0:
+                    continue
+                cols = np.array([col_of[int(r)] for r in rows], dtype=np.int64)
+                mask[i, cols] = True
+                for key in table_keys:
+                    arr = np.asarray(values[key], dtype=np.float64)
+                    if arr.ndim == 1:
+                        arr = arr.reshape(-1, stacked[key].shape[-1])
+                    if arr.shape[0] != rows.size:
+                        raise ValueError(
+                            f"Group '{param_name}' upload {i} key {key!r} has "
+                            f"{arr.shape[0]} rows, expected {rows.size}"
+                        )
+                    stacked[key][i, cols] = arr
+            prev_at = {key: prev_np[key][union] for key in table_keys}
+            return union, stacked, mask, prev_at
+
+        if table_keys is not None:
+            raise TypeError(
+                f"Group '{param_name}' previous table is a dict but uploads "
+                "use a single tensor for values"
+            )
+        d = int(prev_np.shape[1]) if prev_np.ndim > 1 else 1
+        stacked_arr = np.zeros((n_clients, k, d), dtype=np.float64)
+        for i, (rows, values) in enumerate(parsed):
+            if isinstance(values, dict):
+                raise TypeError(
+                    f"Group '{param_name}' upload {i} uses dict values; "
+                    "expected a single tensor"
+                )
+            if rows.size == 0:
+                continue
+            cols = np.array([col_of[int(r)] for r in rows], dtype=np.int64)
+            mask[i, cols] = True
+            arr = np.asarray(values, dtype=np.float64)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, d)
+            if arr.shape[0] != rows.size:
+                raise ValueError(
+                    f"Group '{param_name}' upload {i} has {arr.shape[0]} "
+                    f"value rows, expected {rows.size}"
+                )
+            stacked_arr[i, cols] = arr
+        return union, stacked_arr, mask, prev_np[union]
+
+    def _row_table_numpy(self, table: Any):
+        """Return (n_rows, dict_keys_or_None, numpy table)."""
+        if isinstance(table, dict):
+            keys = sorted(table.keys())
+            converted = {k: np.asarray(table[k]) for k in keys}
+            n_rows = int(converted[keys[0]].shape[0])
+            for k in keys[1:]:
+                if int(converted[k].shape[0]) != n_rows:
+                    raise ValueError(
+                        "Dict table tensors have mismatched leading dimensions"
+                    )
+            return n_rows, keys, converted
+        arr = np.asarray(table)
+        return int(arr.shape[0]), None, arr
+
+    def _scatter_exchanged_rows(
+        self,
+        param_name: str,
+        param_io: ParamIO,
+        previous_parameters: Any,
+        union_rows: np.ndarray,
+        agg_rows: Any,
+    ) -> Any:
+        """``table[rows] = apply_exchange(table[rows], agg_rows)``; other rows untouched."""
+        if isinstance(previous_parameters, dict):
+            out = {}
+            for key, old in previous_parameters.items():
+                out[key] = self._scatter_exchanged_rows(
+                    param_name, param_io, old, union_rows, agg_rows[key]
+                )
+            return out
+        old_slice = self._take_rows(previous_parameters, union_rows)
+        new_slice = self._apply_exchange_to_value(
+            old_value=old_slice,
+            aggregated_result=self._coerce_like(agg_rows, old_slice),
+            param_io=param_io,
+            param_name=param_name,
+        )
+        return self._put_rows(previous_parameters, union_rows, new_slice)
+
+    @staticmethod
+    def _take_rows(table: Any, rows: np.ndarray):
+        if isinstance(table, torch.Tensor):
+            idx = torch.as_tensor(rows, dtype=torch.long, device=table.device)
+            return table[idx]
+        return np.asarray(table)[np.asarray(rows, dtype=np.int64)]
+
+    @staticmethod
+    def _put_rows(table: Any, rows: np.ndarray, new_rows: Any):
+        if isinstance(table, torch.Tensor):
+            out = table.clone()
+            idx = torch.as_tensor(rows, dtype=torch.long, device=table.device)
+            out[idx] = torch.as_tensor(new_rows, dtype=table.dtype, device=table.device)
+            return out
+        out = np.array(table, copy=True)
+        out[np.asarray(rows, dtype=np.int64)] = np.asarray(new_rows)
+        return out
+
+    @staticmethod
+    def _coerce_like(value: Any, like: Any):
+        if isinstance(like, torch.Tensor):
+            return torch.as_tensor(value, dtype=like.dtype, device=like.device)
+        return np.asarray(value)
 
     def _apply_aggregated_result(
         self,

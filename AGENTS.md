@@ -32,7 +32,7 @@ Imports currently use the `src.fedreclab` root and must be run from the reposito
 1. `InteractionDataset` is the single source of truth for interactions. IDs are remapped to contiguous 0-based integers there. Methods never re-map IDs or load data themselves.
 2. One `BaseClientAlgorithm` object defines client behaviour; per-client data lives in `ClientStateBase`. Do not create per-client Python objects.
 3. Client state holds **only client-resident data** (e.g. user embeddings, local heads, their optimiser state). Server-resident parameters arrive in `ClientTrainingRequest.global_payload` every round. Existing violations are tracked as debt; do not add new ones.
-4. Every exchanged parameter group is declared with `ParamIO(residency, exchange, apply_to)` by the method. Aggregators are experiment configuration, passed as one object or a `{group: aggregator}` dict.
+4. Every exchanged parameter group is declared with `ParamIO(residency, exchange, apply_to, layout="dense"|"rows")` by the method. Aggregators are experiment configuration, passed as one object or a `{group: aggregator}` dict. Row-layout groups upload `{rows, values}`; the server applies the configured aggregator per row.
 5. **Methods must not special-case aggregator classes** (no `isinstance(agg, SomeAggregator)` in method code). Define the update format; any compatible aggregator must work.
 6. Aggregators accept stacked arrays/tensors or lists of dict-of-tensors, compute in NumPy and return the input's type, dtype and device.
 7. Evaluation is client-level: `compute_scores(client_id, candidate_items_per_user, global_parameters, client_state, extra_payload)`. Every candidate of a user is scored by the same function.

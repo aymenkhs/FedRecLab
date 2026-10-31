@@ -25,8 +25,6 @@ from src.fedreclab.federated.base_client import (
     ClientTrainingResponse,
 )
 from src.fedreclab.federated.utils import (
-    ParamIO,
-    UpdatePackage,
     assert_client_names_disjoint,
     assert_skeleton_server_coverage,
     extract_named_optimizer_state,
@@ -117,7 +115,10 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         client_state = training_request.client_state
         training_data = training_request.training_data
 
-        model.load_server_state(training_request.global_payload["model_state"])
+        payload = training_request.global_payload
+        model.load_server_state(payload["model_state"])
+        if "item_embeddings" in payload:
+            model.load_item_embeddings(payload["item_embeddings"])
         model.train()
 
         named_params, user_emb = self._inject_user_parameter(client_state)
@@ -228,8 +229,18 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
         numpy_state: Dict[str, Any] = {
             k: (v.detach().cpu().numpy() if hasattr(v, "detach") else np.asarray(v))
-            for k, v in model.get_server_state().items()
+            for k, v in model.get_model_state().items()
         }
+
+        item_rows = set(int(i) for i in item_ids_np)
+        if history_items_np is not None:
+            item_rows.update(int(i) for i in np.asarray(history_items_np).reshape(-1))
+        item_upload = self._embedding_upload(
+            training_request,
+            "item_embeddings",
+            model.get_item_embeddings(),
+            item_rows,
+        )
 
         user_embedding_row = user_emb.detach().cpu().numpy()
         user_ids_list: List[int] = [central_user_id]
@@ -245,24 +256,18 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                     user_ids_list.append(uid)
                     embeddings_list.append(np.asarray(updated, dtype=np.float32))
 
-        user_emb_update = {
-            "user_ids": np.array(user_ids_list, dtype=np.int64),
-            "embeddings": np.stack(embeddings_list, axis=0).astype(np.float32),
-        }
+        user_upload = self._embedding_upload(
+            training_request,
+            "user_embeddings",
+            np.stack(embeddings_list, axis=0).astype(np.float32),
+            user_ids_list,
+            values_already_rows=True,
+        )
 
-        updates_packages: Dict[str, UpdatePackage] = {
-            "model_state": UpdatePackage(
-                param_name="model_state",
-                param_io=ParamIO(residency="server", exchange="params", apply_to="server"),
-                param_value=numpy_state,
-                param_metadata={},
-            ),
-            "user_embeddings": UpdatePackage(
-                param_name="user_embeddings",
-                param_io=ParamIO(residency="server", exchange="params", apply_to="custom"),
-                param_value=user_emb_update,
-                param_metadata={},
-            ),
+        updates_packages = {
+            "model_state": self._update_package(training_request, "model_state", numpy_state),
+            "item_embeddings": self._update_package(training_request, "item_embeddings", item_upload),
+            "user_embeddings": self._update_package(training_request, "user_embeddings", user_upload),
         }
 
         updated_state = ClientStateBase(
@@ -295,6 +300,8 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         device = self._device
 
         model.load_server_state(global_parameters["model_state"])
+        if "item_embeddings" in global_parameters:
+            model.load_item_embeddings(global_parameters["item_embeddings"])
         _, user_emb = self._inject_user_parameter(client_state)
         model.eval()
 
@@ -332,6 +339,32 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                 scores[user_id] = preds.cpu().numpy()
 
         return scores, 0.0
+
+    def _embedding_upload(
+        self,
+        training_request: ClientTrainingRequest,
+        group_name: str,
+        table,
+        row_ids,
+        values_already_rows: bool = False,
+    ):
+        """Full table if layout is dense; sparse {rows, values} otherwise."""
+        param_ios = training_request.param_ios or {}
+        layout = getattr(param_ios.get(group_name), "layout", "rows")
+        rows = np.asarray(list(row_ids), dtype=np.int64)
+        if values_already_rows:
+            values = np.asarray(table, dtype=np.float32)
+        else:
+            tensor = torch.as_tensor(table)
+            values = tensor[torch.as_tensor(rows, dtype=torch.long)].detach().cpu().numpy()
+        if layout == "dense":
+            if values_already_rows:
+                raise ValueError(
+                    f"Dense layout for '{group_name}' needs the full table; "
+                    "got pre-sliced rows"
+                )
+            return table if not hasattr(table, "detach") else table.detach().cpu().clone()
+        return {"rows": rows, "values": np.asarray(values, dtype=np.float32)}
 
     def _inject_user_parameter(self, client_state: ClientStateBase):
         weight = client_state.local_parameters["user_embedding.weight"]

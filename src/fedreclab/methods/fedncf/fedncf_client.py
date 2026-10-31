@@ -11,6 +11,12 @@ optimizer_state_scope:
   - "client_resident" (default): persist Adam moments for user tables only
   - "none": no optimiser state is kept
   - "all": persist moments for every assembled parameter (memory-heavy)
+
+item_upload_include_negatives:
+  Default False follows Algorithm 2 (P = O): only positive item ids are
+  uploaded when item_embeddings layout is "rows". True includes negatives
+  sampled during local training. §3.5.2's blurring argument relies on
+  negative-item updates being visible to the server.
 """
 
 import logging
@@ -28,8 +34,6 @@ from src.fedreclab.federated.base_client import (
     ClientTrainingResponse,
 )
 from src.fedreclab.federated.utils import (
-    ParamIO,
-    UpdatePackage,
     assert_client_names_disjoint,
     assert_skeleton_server_coverage,
     extract_named_optimizer_state,
@@ -58,6 +62,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         batch_size: int = 128,
         neg_samples: int = 3,
         optimizer_state_scope: str = "client_resident",
+        item_upload_include_negatives: bool = False,
     ):
         super().__init__()
         if optimizer_state_scope not in _OPTIMIZER_STATE_SCOPES:
@@ -71,6 +76,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         self.batch_size = batch_size
         self.neg_samples = neg_samples
         self.optimizer_state_scope = optimizer_state_scope
+        self.item_upload_include_negatives = bool(item_upload_include_negatives)
         self.num_items = None
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._skeleton: NeuralCollaborativeFiltering | None = None
@@ -153,12 +159,15 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
 
         all_losses: List[float] = []
         num_training_examples = 0
+        touched_items = set(int(i) for i in pos_item_ids)
 
         for _ in range(self.local_epochs):
             samples_x, samples_y = self._build_epoch_samples(
                 pos_local_uids, pos_item_ids, pos_ratings, user_pos_items,
             )
             num_training_examples += len(samples_x)
+            if self.item_upload_include_negatives:
+                touched_items.update(int(i) for i in samples_x[:, 1])
 
             perm = np.random.permutation(len(samples_x))
             samples_x = samples_x[perm]
@@ -185,15 +194,14 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
                 all_losses.append(epoch_loss / num_batches)
 
         server_groups = model.get_server_state_groups()
+        server_groups["item_embeddings"] = self._item_embedding_upload(
+            training_request, server_groups["item_embeddings"], touched_items
+        )
 
-        updates_packages = {}
-        for group_name, group_value in server_groups.items():
-            updates_packages[group_name] = UpdatePackage(
-                param_name=group_name,
-                param_io=ParamIO(residency="server", exchange="params", apply_to="server"),
-                param_value=group_value,
-                param_metadata={},
-            )
+        updates_packages = {
+            group_name: self._update_package(training_request, group_name, group_value)
+            for group_name, group_value in server_groups.items()
+        }
 
         updated_state = ClientStateBase(
             client_id=client_id,
@@ -215,6 +223,24 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
             training_duration=time.time() - t0,
             num_training_examples=num_training_examples,
         )
+
+    def _item_embedding_upload(
+        self,
+        training_request: ClientTrainingRequest,
+        item_tables: Dict[str, Any],
+        touched_items: set,
+    ):
+        """Full tables if layout is dense; sparse {rows, values} otherwise."""
+        param_ios = training_request.param_ios or {}
+        layout = getattr(param_ios.get("item_embeddings"), "layout", "rows")
+        if layout == "dense":
+            return item_tables
+        rows = np.array(sorted(touched_items), dtype=np.int64)
+        values = {}
+        for key, table in item_tables.items():
+            tensor = torch.as_tensor(table)
+            values[key] = tensor[torch.as_tensor(rows, dtype=torch.long)].detach().cpu().clone()
+        return {"rows": rows, "values": values}
 
     def _build_epoch_samples(
         self,
