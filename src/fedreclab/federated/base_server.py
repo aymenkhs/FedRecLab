@@ -52,6 +52,13 @@ class BaseFederatedServer:
 
         self.client_algorithm = client_algorithm
 
+        # Resolve before init hooks so subclasses and the client can use them.
+        self.training_framework = training_framework
+        self.device = device
+        if self.training_framework == "torch" and self.device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.client_algorithm.device = self.device
+
         self.param_ios = param_ios
         if param_io_overrides:
             self._apply_param_io_overrides(param_io_overrides)
@@ -124,11 +131,6 @@ class BaseFederatedServer:
 
         self.global_parameters = {}
         self.global_parameters = self._initialize_server_parameters()
-
-        self.training_framework = training_framework
-        self.device = device
-        if self.training_framework == "torch" and self.device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def _initialize_client_states(self):
         for client_id in range(self.num_clients):

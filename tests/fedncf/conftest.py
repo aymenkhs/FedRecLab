@@ -31,7 +31,7 @@ def fedncf_client_and_request():
             optimizer_state_scope=optimizer_state_scope,
             **kwargs,
         )
-        client._device = torch.device("cpu")
+        client.device = torch.device("cpu")
         local, opt_state = client.initialize_local_parameters(
             client_id=0,
             total_num_users=1,

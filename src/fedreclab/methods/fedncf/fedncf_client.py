@@ -157,7 +157,6 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         self.optimizer_state_scope = optimizer_state_scope
         self.item_upload_include_negatives = bool(item_upload_include_negatives)
         self.num_items = None
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._skeleton: NeuralCollaborativeFiltering | None = None
         self._warned_all_scope = False
 
@@ -166,10 +165,15 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
             return
         if self.num_items is None:
             raise RuntimeError("init_model_skeleton requires num_items to be set")
+        if self.device is None:
+            raise RuntimeError(
+                "device is not set. The server assigns client.device from "
+                "server.device before initialise; standalone callers must set it."
+            )
         self._skeleton = NeuralCollaborativeFiltering(
             num_items=self.num_items,
             predictive_factor=self.predictive_factor,
-        ).to(self._device)
+        ).to(self.device)
         server_names = set(flatten_grouped_state(self._skeleton.get_server_state_groups()))
         assert_skeleton_server_coverage(self._skeleton, server_names)
         assert_client_names_disjoint(server_names, _CLIENT_TENSOR_NAMES)
@@ -208,7 +212,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         t0 = time.time()
         self.init_model_skeleton()
         model = self._skeleton
-        device = self._device
+        device = self.device
 
         client_id = training_request.client_id
         client_state = training_request.client_state
@@ -477,7 +481,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         """
         self.init_model_skeleton()
         model = self._skeleton
-        device = self._device
+        device = self.device
         user_id_to_local = client_state.local_parameters["user_id_to_local"]
 
         model.load_server_weights(global_parameters)
@@ -502,10 +506,10 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
     def _inject_user_parameters(self, client_state: ClientStateBase):
         user_state = client_state.local_parameters["user_embeddings"]
         gmf_user = nn.Parameter(
-            torch.as_tensor(user_state["gmf_user_embeddings.weight"], device=self._device).clone()
+            torch.as_tensor(user_state["gmf_user_embeddings.weight"], device=self.device).clone()
         )
         mlp_user = nn.Parameter(
-            torch.as_tensor(user_state["mlp_user_embeddings.weight"], device=self._device).clone()
+            torch.as_tensor(user_state["mlp_user_embeddings.weight"], device=self.device).clone()
         )
         named_params = {n: p for n, p in self._skeleton.named_parameters()}
         named_params["gmf_user_embeddings.weight"] = gmf_user

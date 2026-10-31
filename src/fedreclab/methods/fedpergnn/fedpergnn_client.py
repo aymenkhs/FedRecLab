@@ -68,7 +68,6 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         self.optimizer_state_scope = optimizer_state_scope
 
         self._num_items: int | None = None
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._skeleton: FedPerGNNModel | None = None
         self._warned_all_scope = False
 
@@ -77,12 +76,17 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             return
         if self._num_items is None:
             raise RuntimeError("init_model_skeleton requires num_items to be set")
+        if self.device is None:
+            raise RuntimeError(
+                "device is not set. The server assigns client.device from "
+                "server.device before initialise; standalone callers must set it."
+            )
         self._skeleton = FedPerGNNModel(
             num_items=self._num_items,
             hidden_dim=self.hidden_dim,
             history_len=self.history_len,
             neighbor_len=self.neighbor_len,
-        ).to(self._device)
+        ).to(self.device)
         server_names = set(self._skeleton.get_server_state())
         assert_skeleton_server_coverage(self._skeleton, server_names)
         assert_client_names_disjoint(server_names, _CLIENT_TENSOR_NAMES)
@@ -109,7 +113,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         t0 = time.time()
         self.init_model_skeleton()
         model = self._skeleton
-        device = self._device
+        device = self.device
 
         client_id = training_request.client_id
         client_state = training_request.client_state
@@ -342,7 +346,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         """
         self.init_model_skeleton()
         model = self._skeleton
-        device = self._device
+        device = self.device
 
         model.load_server_state(global_parameters["model_state"])
         if "item_embeddings" in global_parameters:
@@ -413,7 +417,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
     def _inject_user_parameter(self, client_state: ClientStateBase):
         weight = client_state.local_parameters["user_embedding.weight"]
-        user_emb = nn.Parameter(torch.as_tensor(weight, device=self._device).clone())
+        user_emb = nn.Parameter(torch.as_tensor(weight, device=self.device).clone())
         named_params = {n: p for n, p in self._skeleton.named_parameters()}
         named_params["user_embedding.weight"] = user_emb
         return named_params, user_emb

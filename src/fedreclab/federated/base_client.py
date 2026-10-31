@@ -47,8 +47,33 @@ class ClientTrainingResponse:
 
 
 class BaseClientAlgorithm:
-    def __init__(self):
-        pass
+    """One algorithm object shared by every client.
+
+    ``device`` is simulation runtime config. The server writes
+    ``client_algorithm.device = server.device`` before
+    ``initialize_local_parameters``. Standalone callers must set
+    ``device`` themselves.
+    """
+
+    def __init__(self, device: str | None = None):
+        """Store the simulation device.
+
+        Parameters
+        ----------
+        device : str or None, optional
+            Torch device string such as ``"cpu"`` or ``"cuda"``. ``None``
+            until the server or a standalone caller assigns it.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        >>> BaseClientAlgorithm(device="cpu").device
+        'cpu'
+        """
+        self.device = device
 
     def init_model_skeleton(self):
         raise NotImplementedError("Subclasses must implement this method")

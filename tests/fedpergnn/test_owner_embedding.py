@@ -24,7 +24,7 @@ def test_local_train_uses_client_state_row_not_the_server_table():
         batch_size=4,
         optimizer_state_scope="client_resident",
     )
-    client._device = torch.device("cpu")
+    client.device = torch.device("cpu")
     local, opt_state = client.initialize_local_parameters(
         client_id=0,
         total_num_users=2,
