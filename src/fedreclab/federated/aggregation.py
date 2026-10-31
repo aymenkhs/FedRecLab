@@ -433,12 +433,41 @@ class TrimmedMean(BaseAggregation):
         return self._to_torch_like(tm, like0) if isinstance(like0, torch.Tensor) else tm
 
 
-class FedAtt(FedAvg):
-    """
-    Attention-style aggregation.
+class FedAtt(BaseAggregation):
+    """Layer-wise attentive aggregation (Ji et al., IJCNN 2019).
 
-    Computes a softmax over distances ||prev - update_i||_ord (ord=metric),
-    then returns: prev - stepsize * sum_i att_i * (prev - update_i).
+    For each tensor, compute a softmax over client distances
+    ``||prev - update_i||_ord`` (``ord=metric``) and return
+
+    ``prev - stepsize * sum_i att_i * (prev - update_i)``.
+
+    Dict groups score **each key independently**. That matches the official
+    ``shaoxiongji/fed-att`` loop over state-dict tensors. The paper calls
+    this layer-wise; the code does not glue a module's weight and bias.
+
+    Row-layout groups still call this once per union row, over that row's
+    senders (the ``BaseAggregation`` loop, not FedAvg's masked mean). A
+    row that is itself a dict (e.g. FedNCF GMF and MLP tables) therefore
+    also gets one attention per table.
+
+    Deviations from Ji et al.:
+      The optional Gaussian randomisation (paper Eq. 6) is not applied.
+
+    Parameters
+    ----------
+    num_clients : int
+        Population size stored on ``BaseAggregation``.
+    stepsize : float, optional
+        ``ε`` in the server update. Default is 1.0.
+    metric : int, optional
+        Order of the vector norm used as the client–server distance.
+        Default is 2 (Euclidean on the flattened tensor).
+
+    Examples
+    --------
+    Two tensors with complementary distances get different attentions::
+
+        FedAtt(2).aggregate(info, {"w": w0, "b": b0}, [u0, u1], pio)
     """
 
     def __init__(self, num_clients: int, stepsize: float = 1.0, metric: int = 2):
@@ -453,6 +482,65 @@ class FedAtt(FedAvg):
         e = np.exp(x)
         return e / np.sum(e)
 
+    def _fedatt_next(self, prev: np.ndarray, updates: np.ndarray) -> np.ndarray:
+        """One FedAtt step on a single tensor.
+
+        Parameters
+        ----------
+        prev : ndarray
+            Previous server tensor, shape ``d``.
+        updates : ndarray
+            Stacked client tensors, shape ``(n, *d)``.
+
+        Returns
+        -------
+        ndarray
+            Updated tensor, same shape as ``prev``.
+
+        Raises
+        ------
+        ValueError
+            If a client tensor does not match ``prev``, or if any value
+            is non-finite.
+        """
+        prev = np.asarray(prev)
+        updates = np.asarray(updates)
+        if updates.shape[1:] != prev.shape:
+            raise ValueError(
+                f"FedAtt: update shape {updates.shape} is incompatible with "
+                f"previous shape {prev.shape}"
+            )
+        _require_finite(prev, "FedAtt previous parameters")
+        _require_finite(updates, "FedAtt client updates")
+        n = int(updates.shape[0])
+        diffs_flat = prev.reshape(1, -1) - updates.reshape(n, -1)
+        dists = np.linalg.norm(diffs_flat, ord=self.metric, axis=1)
+        att = self._softmax_np(dists)
+        direction = np.sum(
+            (prev[None, ...] - updates) * att.reshape(n, *([1] * prev.ndim)),
+            axis=0,
+        )
+        return prev - self.stepsize * direction
+
+    def _cast_fedatt(self, next_np: np.ndarray, like: Any):
+        """Return ``next_np`` as a torch tensor when ``like`` is one.
+
+        Parameters
+        ----------
+        next_np : ndarray
+            FedAtt result in NumPy.
+        like : array or Tensor
+            Previous value, used only for type/dtype/device.
+
+        Returns
+        -------
+        ndarray or Tensor
+            ``next_np``, or a tensor matching ``like``.
+        """
+        if isinstance(like, torch.Tensor):
+            return self._to_torch_like(next_np, like)
+        return next_np
+
     def aggregate(
         self,
         round_info: RoundStatistics,
@@ -460,41 +548,57 @@ class FedAtt(FedAvg):
         updates: Any,
         param_io: ParamIO,
     ):
+        """Aggregate one group (or one row) with per-tensor attention.
+
+        Parameters
+        ----------
+        round_info : RoundStatistics
+            Unused; present for the aggregator interface.
+        previous_parameters : array or dict of arrays
+            Server tensors before this round.
+        updates : list or stacked array
+            Per-client tensors, same layout as ``previous_parameters``.
+        param_io : ParamIO
+            Group declaration (unused).
+
+        Returns
+        -------
+        array or dict of arrays
+            Updated tensors, same type/layout as ``previous_parameters``.
+
+        Raises
+        ------
+        ValueError
+            If there are no updates, a dict key is missing, or a tensor
+            shape does not match the previous parameters.
+        TypeError
+            If updates are a dict but ``previous_parameters`` is not.
+        """
         per_client = _iter_client_updates(updates)
         if len(per_client) == 0:
             raise ValueError("No client updates provided")
-
-        # Use a single attention over the whole parameter group (flattened),
-        # then apply the resulting weights to each parameter tensor/value.
-        prev_flat = _flatten_update(previous_parameters)
-        upd_flat = np.stack([_flatten_update(u) for u in per_client], axis=0)
-        if upd_flat.shape[1] != prev_flat.shape[0]:
-            raise ValueError("FedAtt: previous_parameters and updates shapes are incompatible")
-
-        diffs = prev_flat[None, :] - upd_flat
-        dists = np.linalg.norm(diffs, ord=self.metric, axis=1)
-        att = self._softmax_np(dists)
 
         if isinstance(per_client[0], dict):
             keys = _ensure_same_dict_keys(per_client)
             if not isinstance(previous_parameters, dict):
                 raise TypeError("FedAtt: expected previous_parameters to be dict for dict updates")
+            missing = [k for k in keys if k not in previous_parameters]
+            if missing:
+                raise ValueError(
+                    f"FedAtt: previous_parameters missing keys {missing}"
+                )
             out: dict[str, Any] = {}
             for k in keys:
                 prev_k = _to_numpy(previous_parameters[k])
                 upd_k = np.stack([_to_numpy(u[k]) for u in per_client], axis=0)
-                direction = np.sum((prev_k[None, :] - upd_k) * att.reshape(-1, *([1] * (upd_k.ndim - 1))), axis=0)
-                next_k = prev_k - self.stepsize * direction
-                like = previous_parameters[k]
-                out[k] = self._to_torch_like(next_k, like) if isinstance(like, torch.Tensor) else next_k
+                next_k = self._fedatt_next(prev_k, upd_k)
+                out[k] = self._cast_fedatt(next_k, previous_parameters[k])
             return out
 
         prev_np = _to_numpy(previous_parameters)
         upd_np = np.stack([_to_numpy(u) for u in per_client], axis=0)
-        direction = np.sum((prev_np[None, :] - upd_np) * att.reshape(-1, *([1] * (upd_np.ndim - 1))), axis=0)
-        next_np = prev_np - self.stepsize * direction
-        like0 = previous_parameters
-        return self._to_torch_like(next_np, like0) if isinstance(like0, torch.Tensor) else next_np
+        next_np = self._fedatt_next(prev_np, upd_np)
+        return self._cast_fedatt(next_np, previous_parameters)
 
 
 class Krum(BaseAggregation):
