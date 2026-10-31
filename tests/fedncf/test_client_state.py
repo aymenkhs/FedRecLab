@@ -76,7 +76,7 @@ def test_item_table_moments_are_not_restored_on_the_next_round(
 
 def test_scoring_does_not_need_a_stored_module(fedncf_client_and_request):
     client, request = fedncf_client_and_request()
-    scores, _ = client.compute_scores(
+    scores = client.compute_scores(
         0,
         {0: np.array([1, 2, 3])},
         request.global_payload,
