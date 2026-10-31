@@ -7,12 +7,6 @@ import pandas as pd
 from src.fedreclab.federated.base_server import BaseFederatedServer
 from src.fedreclab.federated.base_client import ClientTrainingResponse
 from src.fedreclab.federated.utils import ParamIO, RoundStatistics
-from src.fedreclab.federated.aggregation import (
-    DistFedAvgItems,
-    DistFedAvgUsers,
-    Krum,
-    Bulyan,
-)
 from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
@@ -269,7 +263,6 @@ class FedPerGNN(BaseFederatedServer):
         When user_embeddings_aggregate=True: group by user_id, call configured aggregator per user, then scatter.
         """
         table = np.array(self.global_parameters["user_embeddings"], copy=True)
-        selected = self.current_round_statistics.selected
         param_io = self.param_ios["user_embeddings"]
         agg = self.aggregation_strategies["user_embeddings"]
 
@@ -300,24 +293,14 @@ class FedPerGNN(BaseFederatedServer):
                         table[int(u)] = embeddings[i]
             return table
 
-        # Build reverse map: anchor client id for each user.
-        anchor_client_for_user: Dict[int, int] = {}
-        cp = self.interaction_dataset.client_partition
-        for client_id in range(self.num_clients):
-            users_in_client = cp.client_ids_2_user_ids[client_id]
-            if users_in_client:
-                u_anchor = int(users_in_client[0])
-                anchor_client_for_user[u_anchor] = client_id
-
-        # Group by user_id: user_id -> list of (client_id, is_anchor, embedding_row)
+        # Group by user_id: user_id -> list of (client_id, embedding_row)
         per_user: Dict[int, List[tuple]] = defaultdict(list)
         for (client_id, user_ids, embeddings) in updates_by_client:
             for i, u in enumerate(user_ids):
                 u_int = int(u)
                 if 0 <= u_int < table.shape[0]:
-                    is_anchor = anchor_client_for_user.get(u_int) == client_id
                     per_user[u_int].append(
-                        (client_id, is_anchor, np.asarray(embeddings[i], dtype=np.float32))
+                        (client_id, np.asarray(embeddings[i], dtype=np.float32))
                     )
 
         stats = self.current_round_statistics
@@ -335,34 +318,13 @@ class FedPerGNN(BaseFederatedServer):
                 training_losses={cid: stats.training_losses.get(cid, []) for cid in client_ids},
                 training_durations={cid: stats.training_durations.get(cid, 0.0) for cid in client_ids},
             )
-
-            if isinstance(agg, DistFedAvgUsers):
-                embeddings_list = [c[2] for c in contribs]
-                is_anchor_list = [c[1] for c in contribs]
-                updates_user = {
-                    "embeddings": embeddings_list,
-                    "is_anchor": is_anchor_list,
-                }
-                aggregated_row = agg.aggregate(
-                    round_info_user,
-                    prev_row,
-                    updates_user,
-                    param_io,
-                )
-            else:
-                updates_user = [c[2] for c in contribs]
-                # Robust aggregators like Krum/Bulyan: fallback to mean when too few contributors.
-                if isinstance(agg, (Krum, Bulyan)) and len(updates_user) < 3:
-                    aggregated_row = np.mean(
-                        np.stack(updates_user, axis=0), axis=0
-                    ).astype(np.float32)
-                else:
-                    aggregated_row = agg.aggregate(
-                        round_info_user,
-                        prev_row,
-                        updates_user,
-                        param_io,
-                    )
+            updates_user = [c[1] for c in contribs]
+            aggregated_row = agg.aggregate(
+                round_info_user,
+                prev_row,
+                updates_user,
+                param_io,
+            )
 
             if hasattr(aggregated_row, "detach"):
                 aggregated_row = aggregated_row.detach().cpu().numpy()
@@ -377,37 +339,6 @@ class FedPerGNN(BaseFederatedServer):
         training_responses: List[ClientTrainingResponse],
     ):
         """Override to handle user_embeddings with sparse updates and per-user aggregation."""
-        if (
-            "model_state" in self.aggregation_strategies
-            and isinstance(self.aggregation_strategies["model_state"], DistFedAvgItems)
-        ):
-            agg_items = self.aggregation_strategies["model_state"]
-            agg_items.prev_user_emb = np.array(
-                self.global_parameters["user_embeddings"], copy=True
-            )
-            sel = self.current_round_statistics.selected
-            cp = self.interaction_dataset.client_partition
-            agg_items.anchor_user_ids = [
-                int(cp.client_ids_2_user_ids[cid][0]) for cid in sel
-            ]
-            if agg_items.user_masking:
-                num_users = int(self.global_parameters["user_embeddings"].shape[0])
-                mask = np.zeros((num_users, num_users), dtype=np.float64)
-                for cid in sel:
-                    neigh = self._expansion_cache.get(cid, {}).get("neighbor_user_ids")
-                    if neigh is None:
-                        continue
-                    u0 = int(cp.client_ids_2_user_ids[cid][0])
-                    for v in np.asarray(neigh).reshape(-1):
-                        v = int(v)
-                        if 0 <= v < num_users:
-                            mask[u0, v] = 1.0
-                            mask[v, u0] = 1.0
-                np.fill_diagonal(mask, 1.0)
-                agg_items.neighborhood_mask = mask
-            else:
-                agg_items.neighborhood_mask = None
-
         for param_name, param_io in self.param_ios.items():
             if param_io.exchange is None or param_io.exchange == "none":
                 continue
