@@ -175,10 +175,10 @@ class BaseFederatedServer:
                     extra_payload=self.extra_payload,
                     split="val",
                 )
-
-            if self.early_stopping and self._early_stopping(current_round):
-                logger.info(f"Early stopping triggered at round {current_round}")
-                break
+                # Patience counts validation checks, not unmeasured rounds.
+                if self.early_stopping and self._early_stopping(current_round):
+                    logger.info(f"Early stopping triggered at round {current_round}")
+                    break
 
             self.previous_round_statistics = self.current_round_statistics
 
