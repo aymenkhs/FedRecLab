@@ -22,6 +22,8 @@ src/fedreclab/
   federated/   base_server.py, base_client.py, aggregation.py, client_selection.py, utils.py
   methods/     one sub-package per method: <method>.py (server), <method>_client.py, <method>_model.py
 docs/          PROJECT_CONTEXT.md, issues/
+tests/         one folder per method (`tests/fedncf/`, `tests/fedpergnn/`, …);
+               shared data/federated tests stay at `tests/` root.
 ```
 
 Imports currently use the `src.fedreclab` root and must be run from the repository root. Do not add imports from scripts at the repository root into library code. A move to an installable `fedreclab` package is planned; do not start it without approval.
@@ -38,7 +40,8 @@ Imports currently use the `src.fedreclab` root and must be run from the reposito
 9. Simulation shortcuts (e.g. a server using global knowledge in place of a privacy protocol) are allowed only if declared in the class docstring under "Simulation shortcuts".
 10. Never silence numerical problems (`nan_to_num`, skipping non-finite losses). Fail loudly with a clear message.
 11. Reproducibility: take randomness from seeded generators passed in from configuration, not from global `random` / `np.random` / unseeded torch.
-12. Do not use 0 as a padding ID for items or users: 0 is a real ID after remapping. Shift indices or use explicit masks.
+12. Any Function or class added should have a full docstring with expected parameters and returns, expetions raised and examples. Follow numpy syle docstring. A reader should know what each function does when reading it.
+13. Do not use 0 as a padding ID for items or users: 0 is a real ID after remapping. Shift indices or use explicit masks.
 
 ## 5. The round loop and hooks
 See `docs/PROJECT_CONTEXT.md` §3.3 for the exact order. Hooks available to subclasses:
@@ -52,8 +55,6 @@ See `docs/PROJECT_CONTEXT.md` §3.3 for the exact order. Hooks available to subc
 2. Propose the `ParamIO` table and the hooks you will use. Get approval.
 3. Implement `methods/<name>/<name>_model.py`, `<name>_client.py` (subclass `BaseClientAlgorithm`), `<name>.py` (subclass `BaseFederatedServer`).
 4. Declare simulation shortcuts and deviations in docstrings.
-5. Add a minimal example under `examples/` and unit tests (§8).
-6. Update `docs/PROJECT_CONTEXT.md` (§5 table) if the method needed a framework extension.
 
 ## 7. Adding an aggregator, selector, split or partition strategy
 Subclass the corresponding base class (`BaseAggregation`, `BaseClientSelection`, `BaseSplitStrategy`, `BaseClientPartitionStrategy`). Keep the constructor minimal. State the expected update format and what the aggregator needs to see (individual updates or only their sum; this matters for secure-aggregation compatibility).
@@ -63,4 +64,5 @@ Subclass the corresponding base class (`BaseAggregation`, `BaseClientSelection`,
 - No validation/test data used outside evaluation.
 - Docstrings updated (including simulation shortcuts and deviations from the paper).
 - The relevant `docs/issues/*.md` entry updated if you fixed or found an issue.
+- Tests for a method go in `tests/<method>/`. Names describe the behaviour; do not use issue IDs.
 - A summary of what changed, why, and what the maintainer should run to verify it.
