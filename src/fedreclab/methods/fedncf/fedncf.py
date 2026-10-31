@@ -32,9 +32,13 @@ Simulation shortcuts:
 
 Deviations from the paper:
   Labels and loss follow §4.2 (implicit binary targets, BCE, four
-  negatives). ``predictive_factor=32``, ``lr=5e-4`` and ``local_epochs=5``
-  on the client are the public-code defaults, not the paper's D=12,
-  Adam 0.001 and two local epochs.
+  negatives). ``lr=5e-4`` and ``local_epochs=5`` are the public-code
+  defaults, not Adam 0.001 and two local epochs. The NeuMF skeleton is
+  the public-code tower (embeddings of size ``2 * predictive_factor``,
+  MLP ``4pf → 2pf → pf → pf/2``). That is not the paper's D=12 with
+  MLP ``24 → 48 → 24 → 12 → 6``; setting ``predictive_factor=12`` does
+  not recover it. The paper architecture is not expressible until MLP
+  and GMF widths are configurable (NCF-03).
 """
 
 from src.fedreclab.federated.base_server import BaseFederatedServer

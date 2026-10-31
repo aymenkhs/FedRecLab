@@ -28,7 +28,8 @@ class NeuralCollaborativeFiltering(nn.Module):
         self.gmf_item_embeddings = nn.Embedding(num_items, 2 * predictive_factor)
         self.mlp_item_embeddings = nn.Embedding(num_items, 2 * predictive_factor)
 
-        # TODO: Allow for custom MLP and GMF layers with a custom activation function, and parameters.
+        # TODO(NCF-03): paper NeuMF is D=12 with MLP 24→48→24→12→6; this
+        # tower cannot express that until MLP/GMF widths are configurable.
         self.mlp = nn.Sequential(
             nn.Linear(4 * predictive_factor, 2 * predictive_factor),
             nn.ReLU(),
@@ -72,11 +73,11 @@ class NeuralCollaborativeFiltering(nn.Module):
         self.output_logits.weight.data.copy_(W)
 
     def forward(self, x, gmf_user_table, mlp_user_table):
-        """Return preference logits for each (user, item) pair.
+        """Return a score for each (user, item) pair.
 
-        The paper's sigmoid sits in BCE-with-logits on the client, not
-        here, so ranking scores stay unbounded. Order is identical to
-        sigmoid probabilities.
+        Under BCE these are logits: the paper's sigmoid sits in
+        BCE-with-logits on the client, and ranking order matches sigmoid
+        probabilities. Under MSE they are rating regressions.
 
         Parameters
         ----------
@@ -88,7 +89,7 @@ class NeuralCollaborativeFiltering(nn.Module):
         Returns
         -------
         torch.Tensor
-            Logits of shape ``(batch,)``.
+            Scores of shape ``(batch,)`` (logits under BCE).
         """
         user_id, item_id = x[:, 0], x[:, 1]
         gmf_product = F.embedding(user_id, gmf_user_table) * self.gmf_item_embeddings(item_id)

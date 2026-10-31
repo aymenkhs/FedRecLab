@@ -11,8 +11,8 @@ Training protocol (paper §3.1, §4.1–4.2):
   Observed interactions are implicit positives (label 1) regardless of the
   raw rating. Four negatives (label 0) are sampled per positive. The client
   optimises BCE-with-logits, which is equivalent to the paper's sigmoid
-  prediction head plus BCE. Ranking scores are the logits; order matches
-  sigmoid probabilities.
+  prediction head plus BCE. Ranking uses the raw scores (logits under
+  BCE); order matches sigmoid probabilities.
 
   ``label_mode="rating"`` with ``loss="mse"`` is a documented deviation:
   positives keep the raw rating and negatives stay 0. That is explicit
@@ -89,7 +89,8 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         ``"rating"`` keeps the raw rating as the positive target.
     loss : {"bce", "mse"}, optional
         ``"bce"`` (paper) is BCE-with-logits. ``"mse"`` is squared error
-        on the logits. ``loss="bce"`` requires ``label_mode="binary"``.
+        on the scores (rating regression). ``loss="bce"`` requires
+        ``label_mode="binary"``.
     optimizer_state_scope : {"client_resident", "none", "all"}, optional
         Which Adam moments to persist in ``ClientState``. Default is
         ``"client_resident"``.
@@ -377,6 +378,8 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         for i in range(n_pos):
             local_uid = pos_local_uids[i]
             pos_item = pos_item_ids[i]
+            # TODO: once a second implicit-feedback method needs the same
+            # transform, binarise on InteractionDataset rather than here.
             pos_label = 1.0 if self.label_mode == "binary" else float(pos_ratings[i])
 
             samples_x[idx] = [local_uid, pos_item]
@@ -401,7 +404,8 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         Parameters
         ----------
         preds : torch.Tensor
-            Model logits, shape ``(batch,)``.
+            Model scores, shape ``(batch,)``. Logits under ``loss="bce"``;
+            rating regressions under ``loss="mse"``.
         targets : torch.Tensor
             Training labels, shape ``(batch,)``. Under ``loss="bce"`` these
             are 0/1; under ``loss="mse"`` they may be ratings.
@@ -419,8 +423,7 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
 
         Examples
         --------
-        >>> # doctest: +SKIP
-        >>> client._compute_loss(logits, labels)
+        >>> client._compute_loss(logits, labels)  # doctest: +SKIP
         """
         if self.loss == "bce":
             return torch.nn.functional.binary_cross_entropy_with_logits(preds, targets)
@@ -458,14 +461,14 @@ class FedNCFClientAlgorithm(BaseClientAlgorithm):
         Returns
         -------
         dict of int to ndarray
-            Preference logits per user, aligned with that user's candidates.
-            Ranking order matches a sigmoid head.
+            Scores per user, aligned with that user's candidates (logits
+            under BCE; rating regressions under MSE). Ranking order is
+            unchanged by a sigmoid.
 
         Examples
         --------
-        >>> # doctest: +SKIP
-        >>> scores = client.compute_scores(0, {0: np.array([1, 2])}, payload, state, {})
-        >>> scores[0].shape
+        >>> scores = client.compute_scores(0, {0: np.array([1, 2])}, payload, state, {})  # doctest: +SKIP
+        >>> scores[0].shape  # doctest: +SKIP
         (2,)
         """
         self.init_model_skeleton()

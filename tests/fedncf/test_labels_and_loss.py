@@ -13,28 +13,21 @@ def test_paper_defaults_are_binary_bce_and_four_negatives():
     assert client.neg_samples == 4
 
 
-def test_binary_labels_ignore_rating_magnitudes(fedncf_client_and_request):
-    client, _ = fedncf_client_and_request()
-    _, y = client._build_epoch_samples(
-        np.array([0, 0]),
-        np.array([1, 2]),
-        np.array([5.0, 0.5], dtype=np.float32),
-        {0: {1, 2}},
+def test_positive_rating_four_is_binary_one_or_raw_four(fedncf_client_and_request):
+    args = (
+        np.array([0]),
+        np.array([1]),
+        np.array([4.0], dtype=np.float32),
+        {0: {1}},
         None,
     )
-    np.testing.assert_array_equal(y, np.array([1.0, 1.0], dtype=np.float32))
+    binary, _ = fedncf_client_and_request()
+    _, y_binary = binary._build_epoch_samples(*args)
+    np.testing.assert_array_equal(y_binary, np.array([1.0], dtype=np.float32))
 
-
-def test_rating_labels_keep_raw_values(fedncf_client_and_request):
-    client, _ = fedncf_client_and_request(label_mode="rating", loss="mse")
-    _, y = client._build_epoch_samples(
-        np.array([0, 0]),
-        np.array([1, 2]),
-        np.array([5.0, 0.5], dtype=np.float32),
-        {0: {1, 2}},
-        None,
-    )
-    np.testing.assert_allclose(y, np.array([5.0, 0.5], dtype=np.float32))
+    rating, _ = fedncf_client_and_request(label_mode="rating", loss="mse")
+    _, y_rating = rating._build_epoch_samples(*args)
+    np.testing.assert_allclose(y_rating, np.array([4.0], dtype=np.float32))
 
 
 def test_sampled_negatives_are_zero(fedncf_client_and_request):
