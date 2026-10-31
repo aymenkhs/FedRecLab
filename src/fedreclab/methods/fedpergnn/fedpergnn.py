@@ -37,6 +37,9 @@ class FedPerGNN(BaseFederatedServer):
       still lets other clients propose edits to your row in the mirror; those
       edits no longer become your next local starting point. Plaintext sparse
       item uploads reveal which items this client trained on.
+
+    Neighbour expansion and the initial user table use ``expansion_seed`` if
+    set, otherwise the server ``seed``. Both default to None (unseeded).
     """
     def __init__(
         self,
@@ -47,7 +50,7 @@ class FedPerGNN(BaseFederatedServer):
         neighbor_embeddings_trainable: bool = False,
         expanded_users: Optional[Dict[int, np.ndarray]] = None,
         history_item_ids: Optional[Dict[int, np.ndarray]] = None,
-        expansion_seed: int = 42,
+        expansion_seed: int | None = None,
         **kwargs: Any,
     ) -> None:
         self.hidden_dim = hidden_dim
@@ -73,6 +76,30 @@ class FedPerGNN(BaseFederatedServer):
 
         super().__init__(param_ios=default_param_ios(), **kwargs)
 
+    def _expansion_rng(self):
+        """RNG for expansion sampling and the initial user table.
+
+        ``expansion_seed`` wins if set; otherwise the server ``seed`` is
+        used so varying the experiment seed also varies neighbours. If
+        both are None, returns ``np.random`` (unseeded).
+
+        Returns
+        -------
+        numpy.random.Generator or module
+            Seeded generator, or ``np.random`` when no seed is set.
+
+        Examples
+        --------
+        >>> s = FedPerGNN.__new__(FedPerGNN)
+        >>> s.expansion_seed, s.seed = None, 0
+        >>> s._expansion_rng().integers(10) == np.random.default_rng(0).integers(10)
+        True
+        """
+        seed = self.expansion_seed if self.expansion_seed is not None else self.seed
+        if seed is None:
+            return np.random
+        return np.random.default_rng(seed)
+
     def _initialize_server_parameters(self) -> Dict[str, Any]:
         """
         Create initial global model parameters using a temporary model.
@@ -93,7 +120,7 @@ class FedPerGNN(BaseFederatedServer):
         }
         item_embeddings = np.asarray(model.get_item_embeddings(), dtype=np.float32)
 
-        rng = np.random.default_rng(self.expansion_seed)
+        rng = self._expansion_rng()
         user_embeddings = rng.normal(
             0.0, 0.01, size=(self.interaction_dataset.num_users, self.hidden_dim)
         ).astype(np.float32)
@@ -140,7 +167,7 @@ class FedPerGNN(BaseFederatedServer):
         Future generalization note (not implemented yet):
           - refresh expanded users every X rounds.
         """
-        rng = np.random.default_rng(self.expansion_seed)
+        rng = self._expansion_rng()
 
         num_clients = self.num_clients
 
