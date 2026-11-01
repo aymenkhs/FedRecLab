@@ -10,7 +10,7 @@ FedRec papers ship code in different frameworks, with different splits, client p
 
 ## What's inside
 
-- **Data:** one interaction table as the single source of truth; ID remapping; k-core filtering; ratio and stratified (optionally chronological) splits; cross-device client partitioning. Datasets via [Cornac](https://cornac.preferred.ai/) or any pandas DataFrame.
+- **Data:** one interaction table as the single source of truth; ID remapping; bipartite k-core and minimum user/item interaction filters; ratio and stratified (optionally chronological) splits; cross-device client partitioning. Datasets via [Cornac](https://cornac.preferred.ai/) or any pandas DataFrame.
 - **Federated core:** a round loop with hooks; per-parameter-group exchange rules (`ParamIO`); pluggable client selection and aggregation.
 - **Aggregators:** FedAvg, SimpleAvg, Median, TrimmedMean, FedAtt, Krum / Multi-Krum, Bulyan. Row-layout groups (`ParamIO.layout="rows"`) apply the same aggregator per embedding row.
 - **Evaluation:** full-ranking top-K metrics (HR, NDCG, Precision, Recall, …) computed per client.

@@ -73,10 +73,55 @@ def load_cornac_dataset(
     time_col: str | None = "timestamp",
     include_validation: bool = False,
     include_test: bool = False,
-    k_core: int = 5,
+    k_core: int = 0,
+    min_user_interactions: int = 0,
+    min_item_interactions: int = 0,
     seed: int = 42,
     rating_exclusion_threshold: float = 0.0,
 ):
+    """Load a Cornac dataset into an ``InteractionDataset``.
+
+    The rating filter runs on the loaded table first. The dataset then
+    applies the minimum-interaction filter and the bipartite k-core, so
+    both count rows that remain after rating filtering. Defaults of 0
+    leave the table unfiltered.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Key in ``CORNAC_DATASETS``.
+    splitting_strategy : BaseSplitStrategy
+        Split strategy forwarded to ``InteractionDataset``.
+    client_partitioning_strategy : BaseClientPartitionStrategy
+        Client partition strategy forwarded to ``InteractionDataset``.
+    user_col, item_col, rating_col : str, optional
+        Column names for the constructed frame.
+    time_col : str or None, optional
+        Timestamp column name. Ignored when the Cornac source has no
+        timestamps.
+    include_validation, include_test : bool, optional
+        Split flags forwarded to ``InteractionDataset``.
+    k_core : int, optional
+        Bipartite k-core threshold. ``0`` disables it. Default is 0.
+    min_user_interactions, min_item_interactions : int, optional
+        One-pass frequency thresholds. ``0`` disables that side.
+        Default is 0.
+    seed : int, optional
+        Seed stored on the dataset. Default is 42.
+    rating_exclusion_threshold : float, optional
+        Keep rows with rating ``>=`` this value when ``> 0``. Default is 0.
+
+    Returns
+    -------
+    InteractionDataset
+        Split and client-partitioned dataset.
+
+    Raises
+    ------
+    ValueError
+        If ``dataset_name`` is unknown, or if a requested dataset filter
+        removes every interaction.
+    """
     if dataset_name not in CORNAC_DATASETS:
         raise ValueError(f"Dataset {dataset_name} not available in cornac datasets please provide one of the following: {list(CORNAC_DATASETS.keys())}")
 
@@ -122,6 +167,8 @@ def load_cornac_dataset(
         rating_col=rating_col,
         time_col=time_col,
         k_core=k_core,
+        min_user_interactions=min_user_interactions,
+        min_item_interactions=min_item_interactions,
     )
     interaction_dataset.split_data()
     interaction_dataset.partition_clients()
@@ -140,8 +187,55 @@ def load_dataframe_dataset(
     include_test: bool = False,
     seed: int = 42,
     rating_exclusion_threshold: float = 0.0,
-    k_core: int = 5,
+    k_core: int = 0,
+    min_user_interactions: int = 0,
+    min_item_interactions: int = 0,
 ):
+    """Build an ``InteractionDataset`` from a pandas DataFrame.
+
+    The rating filter runs on ``df`` first. The dataset then applies the
+    minimum-interaction filter and the bipartite k-core, so both count
+    rows that remain after rating filtering. Defaults of 0 leave the
+    table unfiltered.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Interaction table.
+    splitting_strategy : BaseSplitStrategy
+        Split strategy forwarded to ``InteractionDataset``.
+    client_partitioning_strategy : BaseClientPartitionStrategy
+        Client partition strategy forwarded to ``InteractionDataset``.
+    user_col, item_col : str, optional
+        Column names that must exist on ``df``.
+    rating_col : str or None, optional
+        Rating column name. Missing columns are ignored.
+    time_col : str or None, optional
+        Timestamp column name. Missing columns are ignored.
+    include_validation, include_test : bool, optional
+        Split flags forwarded to ``InteractionDataset``.
+    seed : int, optional
+        Seed stored on the dataset. Default is 42.
+    rating_exclusion_threshold : float, optional
+        Keep rows with rating ``>=`` this value when ``> 0`` and
+        ``rating_col`` is present. Default is 0.
+    k_core : int, optional
+        Bipartite k-core threshold. ``0`` disables it. Default is 0.
+    min_user_interactions, min_item_interactions : int, optional
+        One-pass frequency thresholds. ``0`` disables that side.
+        Default is 0.
+
+    Returns
+    -------
+    InteractionDataset
+        Split and client-partitioned dataset.
+
+    Raises
+    ------
+    ValueError
+        If ``user_col`` or ``item_col`` is missing, or if a requested
+        dataset filter removes every interaction.
+    """
     if user_col not in df.columns:
         raise ValueError(f"user_col '{user_col}' not found in dataframe columns: {list(df.columns)}")
     if item_col not in df.columns:
@@ -178,6 +272,8 @@ def load_dataframe_dataset(
         item_col=item_col,
         rating_col=rating_col,
         time_col=time_col,
+        min_user_interactions=min_user_interactions,
+        min_item_interactions=min_item_interactions,
     )
     interaction_dataset.split_data()
     interaction_dataset.partition_clients()

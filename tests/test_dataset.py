@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
 from src.fedreclab.data.dataset import InteractionDataset
@@ -128,3 +129,183 @@ def test_split_data_labels_match_positional_indices_on_permuted_index():
     assert (dataset.test_interactions["split"] == "test").all()
     labelled_train = set(np.flatnonzero(dataset.interaction_data["split"] == "train"))
     assert labelled_train == set(dataset.train_idx)
+
+
+def _cascade_frame():
+    """Users 0 and 1 interact with {10, 11}; user 2 interacts with {11, 12}."""
+    return pd.DataFrame(
+        {
+            "user_id": [0, 0, 1, 1, 2, 2],
+            "item_id": [10, 11, 10, 11, 11, 12],
+            "rating": [5.0] * 6,
+        }
+    )
+
+
+def _interaction_dataset(df, **kwargs):
+    kwargs.setdefault(
+        "splitting_strategy",
+        RatioSplitStrategy(include_validation=False, include_test=False),
+    )
+    kwargs.setdefault(
+        "client_partitioning_strategy",
+        CrossDeviceSplittingStrategy(),
+    )
+    kwargs.setdefault("time_col", None)
+    return InteractionDataset(interaction_data=df, **kwargs)
+
+
+def _original_ids(dataset):
+    users = {dataset.reverse_user_id_map[i] for i in range(dataset.num_users)}
+    items = {dataset.reverse_item_id_map[i] for i in range(dataset.num_items)}
+    return users, items
+
+
+def test_min_user_interactions_keeps_rare_items():
+    df = pd.DataFrame(
+        {
+            "user_id": [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2],
+            "item_id": [10, 11, 12, 13, 99, 10, 11, 12, 13, 14, 10, 77],
+            "rating": [5.0] * 12,
+        }
+    )
+    dataset = _interaction_dataset(df, min_user_interactions=5)
+
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1}
+    assert original_items == {10, 11, 12, 13, 14, 99}
+    assert 77 not in original_items
+    assert dataset.num_interactions == 10
+
+
+def test_k_core_removes_users_left_below_threshold():
+    dataset = _interaction_dataset(_cascade_frame(), k_core=2)
+
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1}
+    assert original_items == {10, 11}
+    assert dataset.num_interactions == 4
+
+
+def test_k_core_removes_rare_items_of_active_users():
+    df = pd.DataFrame(
+        {
+            "user_id": [0, 0, 0, 0, 1, 1, 1, 2, 2, 2],
+            "item_id": [10, 11, 12, 99, 10, 11, 12, 10, 11, 12],
+            "rating": [5.0] * 10,
+        }
+    )
+    dataset = _interaction_dataset(df, k_core=3)
+
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1, 2}
+    assert original_items == {10, 11, 12}
+    assert 99 not in original_items
+    assert dataset.num_interactions == 9
+
+
+def test_min_interaction_filter_is_single_pass():
+    dataset = _interaction_dataset(
+        _cascade_frame(),
+        min_user_interactions=2,
+        min_item_interactions=2,
+    )
+
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1, 2}
+    assert original_items == {10, 11}
+    assert dataset.num_interactions == 5
+
+
+def test_min_item_interactions_only():
+    dataset = _interaction_dataset(
+        _cascade_frame(),
+        min_user_interactions=0,
+        min_item_interactions=2,
+    )
+
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1, 2}
+    assert original_items == {10, 11}
+    assert dataset.num_interactions == 5
+
+
+def test_min_filter_runs_before_k_core():
+    df = pd.DataFrame(
+        {
+            "user_id": [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4],
+            "item_id": [10, 11, 12, 10, 11, 12, 10, 11, 12, 10, 99, 11, 99],
+            "rating": [5.0] * 13,
+        }
+    )
+    dataset = _interaction_dataset(
+        df,
+        min_user_interactions=0,
+        min_item_interactions=3,
+        k_core=2,
+    )
+
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1, 2}
+    assert original_items == {10, 11, 12}
+    assert 99 not in original_items
+    assert dataset.num_interactions == 9
+
+
+def test_zero_thresholds_leave_data_unchanged():
+    df = _cascade_frame()
+    dataset = _interaction_dataset(df)
+
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1, 2}
+    assert original_items == {10, 11, 12}
+    assert dataset.num_interactions == len(df)
+    assert dataset.k_core == 0
+    assert dataset.min_user_interactions == 0
+    assert dataset.min_item_interactions == 0
+
+
+def test_negative_threshold_raises():
+    df = _cascade_frame()
+    with pytest.raises(ValueError):
+        _interaction_dataset(df, k_core=-1)
+    with pytest.raises(ValueError):
+        _interaction_dataset(df, min_user_interactions=-1)
+    with pytest.raises(ValueError):
+        _interaction_dataset(df, min_item_interactions=-1)
+
+
+def test_filter_removing_everything_raises():
+    df = pd.DataFrame(
+        {
+            "user_id": [0, 1, 2],
+            "item_id": [10, 11, 12],
+            "rating": [5.0, 5.0, 5.0],
+        }
+    )
+    with pytest.raises(ValueError):
+        _interaction_dataset(df, k_core=2)
+    with pytest.raises(ValueError):
+        _interaction_dataset(df, min_user_interactions=2)
+
+
+def test_load_dataframe_forwards_filters():
+    dataset = load_dataframe_dataset(
+        df=_cascade_frame(),
+        splitting_strategy=RatioSplitStrategy(
+            include_validation=False, include_test=False
+        ),
+        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        k_core=2,
+        min_user_interactions=2,
+        min_item_interactions=2,
+        time_col=None,
+    )
+
+    assert dataset.k_core == 2
+    assert dataset.min_user_interactions == 2
+    assert dataset.min_item_interactions == 2
+    original_users, original_items = _original_ids(dataset)
+    assert original_users == {0, 1}
+    assert original_items == {10, 11}
+    assert dataset.num_interactions == 4
