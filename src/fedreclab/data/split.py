@@ -201,3 +201,128 @@ class StratifiedSplitStrategy(__BaseTrainValTestSplit):
             verbose=False,
         )
         return splitter
+
+
+class LeaveNOutSplitStrategy(__BaseTrainValTestSplit):
+    """
+    Leave-N-out split per user. For every user, N interactions go to test and N to validation; the rest are train.
+    chronoTrue means the data will be split in chronological order for the different sets.
+    """
+
+    def __init__(
+        self,
+        include_validation: bool = False,
+        include_test: bool = False,
+        seed: int = 42,
+        rating_threshold: float = 0.0,
+        n_val: int = 1,
+        n_test: int = 1,
+        chrono: bool = False, 
+        **kwargs,
+    ):
+        super().__init__(
+            include_validation=include_validation,
+            include_test=include_test, 
+            seed=seed,
+            **kwargs,
+        )
+        if n_val < 0 or n_test < 0:
+            raise ValueError("n_val and n_test must be non-negative integers")
+        if chrono and self.time_col is None:
+            raise ValueError("chrono=True requires a column with timestamp")
+        self.rating_threshold=rating_threshold
+        self.n_val = n_val
+        self.n_test = n_test
+        self.chrono = chrono
+        self.seed = seed
+        
+    def split(self, interaction_data: pd.DataFrame):
+        df = interaction_data.reset_index(drop=True)
+        n = len(df)
+
+        if not self.include_validation and not self.include_test:
+            return np.arange(n, dtype=int), None, None
+
+        for col in (self.user_col, self.item_col):
+            if col not in df.columns:
+                raise ValueError(f"Interaction data must contain '{col}' column")
+
+        n_val = self.n_val if self.include_validation else 0
+        n_test = self.n_test if self.include_test else 0
+        required = n_val + n_test
+
+        # Which interactions may be held out (rating >= threshold)
+        if self.rating_col is not None and self.rating_col in df.columns:
+            eligible_mask = (df[self.rating_col].to_numpy() >= self.rating_threshold)
+        elif self.rating_threshold > 0:
+            raise ValueError(
+                f"rating_threshold={self.rating_threshold} requires a "
+                f"'{self.rating_col}' column in the interaction data"
+            )
+        else:
+            eligible_mask = np.ones(n, dtype=bool)
+
+        users = df[self.user_col]
+        total_counts = users.groupby(users).size()
+        eligible_counts = (
+            pd.Series(eligible_mask, index=df.index).groupby(users).sum()
+        )
+
+        # Every user needs >= required eligible interactions to hold out,
+        # and more than `required` interactions overall to keep one in train.
+        too_few_eligible = eligible_counts[eligible_counts < required]
+        too_few_total = total_counts[total_counts <= required]
+        if len(too_few_eligible) > 0 or len(too_few_total) > 0:
+            msgs = []
+            if len(too_few_eligible) > 0:
+                ex = ", ".join(f"{u!r} ({c})" for u, c in too_few_eligible.head(5).items())
+                msgs.append(
+                    f"{len(too_few_eligible)} user(s) have fewer than {required} "
+                    f"interactions with rating >= {self.rating_threshold} "
+                    f"(n_val={n_val}, n_test={n_test}). Examples (user, eligible count): {ex}"
+                )
+            if len(too_few_total) > 0:
+                ex = ", ".join(f"{u!r} ({c})" for u, c in too_few_total.head(5).items())
+                msgs.append(
+                    f"{len(too_few_total)} user(s) have {required} or fewer interactions, "
+                    f"so none would remain for training. Examples (user, count): {ex}"
+                )
+            raise ValueError(
+                " | ".join(msgs)
+                + ". Reduce n_val/n_test, lower rating_threshold, or filter out these users."
+            )
+
+        # Ordering key within each user
+        if self.chrono:
+            if self.time_col not in df.columns:
+                raise ValueError(f"Interaction data must contain '{self.time_col}' column")
+            key = df[self.time_col].to_numpy()
+        else:
+            key = np.random.default_rng(self.seed).random(n)
+
+        # Rank only eligible interactions; non-eligible ones never leave train
+        tmp = pd.DataFrame(
+            {
+                "user": df[self.user_col].to_numpy(),
+                "key": key,
+                "pos": np.arange(n, dtype=int),  # tie-breaker -> deterministic
+            }
+        )[eligible_mask].sort_values(["user", "key", "pos"], kind="mergesort")
+
+        # 0 = last eligible interaction of the user (latest, or last in random order)
+        rank_from_end = tmp.groupby("user", sort=False).cumcount(ascending=False).to_numpy()
+        pos = tmp["pos"].to_numpy()
+
+        test_pos = pos[rank_from_end < n_test]
+        val_pos = pos[(rank_from_end >= n_test) & (rank_from_end < required)]
+
+        held_out = np.zeros(n, dtype=bool)
+        held_out[test_pos] = True
+        held_out[val_pos] = True
+
+        train_idx=np.flatnonzero(eligible_mask & ~held_out)
+        val_idx = np.sort(val_pos) if self.include_validation else None
+        test_idx = np.sort(test_pos) if self.include_test else None
+
+
+        return train_idx, val_idx, test_idx
