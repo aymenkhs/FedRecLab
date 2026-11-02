@@ -790,8 +790,8 @@ class PowerOfChoiceClientSelection(BaseClientSelection):
         if current_round_statistics is None:
             return
         for cid in current_round_statistics.responded:
-            losses = current_round_statistics.training_losses.get(cid) or []
-            if len(losses) == 0:
+            losses = current_round_statistics.training_losses.get(cid)
+            if losses is None or len(losses) == 0:
                 continue
             mean = float(np.mean(losses))
             if not np.isfinite(mean):

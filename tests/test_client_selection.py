@@ -300,6 +300,13 @@ def test_power_of_choice_updates_loss_from_responded_clients():
     assert np.isinf(poc.last_loss[2])
 
 
+def test_power_of_choice_accepts_numpy_loss_arrays():
+    poc = PowerOfChoiceClientSelection(3, 1, d=2, seed=0)
+    stats = _round_stats([1], losses={1: np.array([2.0, 4.0])})
+    poc.on_round_end(stats)
+    assert poc.last_loss[1] == pytest.approx(3.0)
+
+
 def test_power_of_choice_non_finite_mean_loss_raises():
     poc = PowerOfChoiceClientSelection(3, 1, d=2, seed=0)
     with pytest.raises(ValueError, match="not finite"):
@@ -338,6 +345,8 @@ def test_compatibility_table_warns_on_exact_class_pairs():
     )
     assert list(iter_selector_aggregator_warnings(poc_weighted, [FedAvg(4)])) != []
     assert list(iter_selector_aggregator_warnings(poc_weighted, [SimpleAvg(4)])) == []
+    shared = FedAvg(4)
+    assert len(list(iter_selector_aggregator_warnings(rr, [shared, shared, shared]))) == 1
 
 
 def test_server_logs_pairing_warning(caplog):

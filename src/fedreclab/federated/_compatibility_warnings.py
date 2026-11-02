@@ -73,8 +73,8 @@ def iter_selector_aggregator_warnings(
 ) -> Iterator[str]:
     """Yield the configured message for each (selector, aggregator) mismatch.
 
-    Each distinct message is yielded once, even if several parameter
-    groups share the same aggregator class.
+    Each aggregator instance is considered once (``id()``), even if
+    several parameter groups share it.
 
     Parameters
     ----------
@@ -97,9 +97,13 @@ def iter_selector_aggregator_warnings(
     >>> next(iter_selector_aggregator_warnings(sel, [FedAvg(4)]))
     'RoundRobinClientSelection visits clients equally often; FedAvg then weights their updates by num_training_examples. Both source analyses (CyCP, RR-CLI) use a plain mean. Use SimpleAvg for the faithful configuration.'
     """
-    seen: set[str] = set()
+    seen: set[int] = set()
     key_sel = type(selector)
     for aggregator in aggregators:
+        agg_id = id(aggregator)
+        if agg_id in seen:
+            continue
+        seen.add(agg_id)
         key = (key_sel, type(aggregator))
         message = SELECTOR_AGGREGATOR_WARNINGS.get(key)
         if message is None:
@@ -107,7 +111,4 @@ def iter_selector_aggregator_warnings(
         when = SELECTOR_AGGREGATOR_WARNING_WHEN.get(key)
         if when is not None and not when(selector, aggregator):
             continue
-        if message in seen:
-            continue
-        seen.add(message)
         yield message
