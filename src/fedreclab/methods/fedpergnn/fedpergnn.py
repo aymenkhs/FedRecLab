@@ -41,9 +41,18 @@ class FedPerGNN(BaseFederatedServer):
     Deviations from Wu et al.:
       The rating predictor is the SI inner product of the user hidden
       state and the target item embedding. The public Keras repo's
-      concat-plus-``Dense(1, sigmoid)`` head is not used. Training is
-      still MSE on observed ratings while the library evaluator reports
-      ranking metrics; the paper reports RMSE.
+      concat-plus-``Dense(1, sigmoid)`` head is not used: that form is
+      additive, so ranking inside a user ignores the GNN state.
+
+      ``FedPerGNNClientAlgorithm.task="rating"`` (default) keeps the
+      paper loss (MSE on observed ratings, no negatives). The library
+      evaluator is still top-K ranking, not RMSE. Record ``task`` with
+      every result (copied onto ``extra_payload["task"]``).
+
+      ``task="ranking"`` is the library ranking protocol (binary labels,
+      sampled negatives, BCE-with-logits), not the paper. Paper
+      pseudo-interacted items are synthetic gradient noise for privacy
+      and never enter the loss; they are not ranking negatives.
 
     Neighbour expansion and the initial user table use ``expansion_seed`` if
     set, otherwise the server ``seed``. Both default to None (unseeded).
@@ -141,6 +150,9 @@ class FedPerGNN(BaseFederatedServer):
     def _before_training(self):
         self._build_fast_indices()
         self._construct_expanded_users()
+        task = getattr(self.client_algorithm, "task", None)
+        if task is not None:
+            self.extra_payload["task"] = task
 
     def _build_fast_indices(self):
         """Precompute item->users and user->items arrays for fast expansion."""

@@ -7,6 +7,27 @@ owner's trajectory. The server user table is a mirror updated by the sparse
 upload each round (expansion / neighbours). With neighbor_embeddings_trainable,
 other clients can still write the owner's row in the mirror, but that no
 longer becomes this client's next starting point.
+
+Training task (``task``):
+  ``"rating"`` (default) follows Wu et al.: MSE on observed ratings only,
+  no negative sampling. Scores are unbounded inner products. The library
+  evaluator is still top-K ranking; that pairing is a documented deviation
+  from the paper's RMSE protocol, not a second training mode.
+
+  ``"ranking"`` is the library ranking protocol: every remaining observed
+  row is label 1 (raw ratings and play counts are ignored), unobserved
+  items are sampled as label 0, and the client optimises BCE-with-logits.
+  Drop low-count implicit rows with ``rating_exclusion_threshold`` at load
+  time before this binarisation. Row-layout item uploads include every
+  item that entered the local loss, so ranking negatives are visible to
+  the server. Pseudo-interacted items in the paper are synthetic gradient
+  noise for privacy; they are not these ranking negatives and are not
+  implemented here.
+
+optimizer_state_scope:
+  - "client_resident" (default): persist Adam moments for the owner row
+  - "none": no optimiser state is kept
+  - "all": persist moments for every assembled parameter (memory-heavy)
 """
 
 import logging
@@ -36,10 +57,62 @@ logger = logging.getLogger(__name__)
 
 _CLIENT_TENSOR_NAMES = ("user_embedding.weight",)
 _OPTIMIZER_STATE_SCOPES = ("client_resident", "none", "all")
+_TASKS = ("rating", "ranking")
 _ALL_SCOPE_WARN_BYTES = 1 << 30
+_DEFAULT_RANKING_NEGATIVES = 4
 
 
 class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
+    """Local training and scoring for FedPerGNN.
+
+    Defaults follow Wu et al.: rating-valued MSE on observed interactions
+    only. Pass ``task="ranking"`` for implicit binary labels, negative
+    sampling, and BCE-with-logits under the library ranking evaluator.
+
+    Parameters
+    ----------
+    hidden_dim : int, optional
+        Width of embeddings and GAT hidden states. Default is 64.
+    history_len : int, optional
+        Padded history length. Default is 20.
+    neighbor_len : int, optional
+        Padded neighbour count per history item. Default is 10.
+    local_epochs : int, optional
+        Local Adam epochs per round. Default is 1.
+    lr : float, optional
+        Adam learning rate. Default is ``1e-3``.
+    batch_size : int, optional
+        Mini-batch size. Default is 128.
+    neighbor_embeddings_trainable : bool, optional
+        If True, neighbour rows in the expansion payload receive a local
+        gradient step that is uploaded to the server mirror. Default is
+        False. The owner row is always trainable.
+    optimizer_state_scope : {"client_resident", "none", "all"}, optional
+        Which Adam moments to persist in ``ClientState``. Default is
+        ``"client_resident"``.
+    task : {"rating", "ranking"}, optional
+        ``"rating"`` (default) trains MSE on raw ratings with no
+        negatives. ``"ranking"`` binarises observed rows to 1, samples
+        unobserved items as 0, and trains BCE-with-logits.
+    neg_samples : int or None, optional
+        Unobserved items sampled per positive. ``None`` (default) is 0
+        under ``task="rating"`` and 4 under ``task="ranking"``. Must be
+        0 when ``task="rating"``.
+
+    Raises
+    ------
+    ValueError
+        If ``optimizer_state_scope`` or ``task`` is unknown, if
+        ``neg_samples`` is negative, or if rating mode is paired with
+        a non-zero ``neg_samples``.
+
+    Examples
+    --------
+    >>> FedPerGNNClientAlgorithm().task, FedPerGNNClientAlgorithm().neg_samples
+    ('rating', 0)
+    >>> FedPerGNNClientAlgorithm(task="ranking").neg_samples
+    4
+    """
 
     def __init__(
         self,
@@ -51,12 +124,31 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         batch_size: int = 128,
         neighbor_embeddings_trainable: bool = False,
         optimizer_state_scope: str = "client_resident",
+        task: str = "rating",
+        neg_samples: int | None = None,
     ) -> None:
         super().__init__()
         if optimizer_state_scope not in _OPTIMIZER_STATE_SCOPES:
             raise ValueError(
                 f"optimizer_state_scope must be one of {_OPTIMIZER_STATE_SCOPES}, "
                 f"got {optimizer_state_scope!r}"
+            )
+        if task not in _TASKS:
+            raise ValueError(f"task must be one of {_TASKS}, got {task!r}")
+        if neg_samples is not None and (not isinstance(neg_samples, int) or isinstance(neg_samples, bool) or neg_samples < 0):
+            raise ValueError(
+                f"neg_samples must be a non-negative integer or None, got {neg_samples!r}"
+            )
+        if task == "rating":
+            resolved_neg = 0 if neg_samples is None else neg_samples
+            if resolved_neg != 0:
+                raise ValueError(
+                    "task='rating' uses observed items only (Wu et al. L_i). "
+                    "Set task='ranking' to sample negatives."
+                )
+        else:
+            resolved_neg = (
+                _DEFAULT_RANKING_NEGATIVES if neg_samples is None else neg_samples
             )
         self.hidden_dim = hidden_dim
         self.history_len = history_len
@@ -66,6 +158,8 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         self.batch_size = batch_size
         self.neighbor_embeddings_trainable = neighbor_embeddings_trainable
         self.optimizer_state_scope = optimizer_state_scope
+        self.task = task
+        self.neg_samples = resolved_neg
 
         self._num_items: int | None = None
         self._skeleton: FedPerGNNModel | None = None
@@ -135,11 +229,11 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         item_col = "item_id"
         rating_col = "rating" if "rating" in training_data.columns else None
 
-        item_ids_np = training_data[item_col].values.astype(np.int64)
+        pos_item_ids = training_data[item_col].values.astype(np.int64)
         if rating_col is not None:
-            ratings_np = training_data[rating_col].values.astype(np.float32)
+            pos_ratings = training_data[rating_col].values.astype(np.float32)
         else:
-            ratings_np = np.ones(len(training_data), dtype=np.float32)
+            pos_ratings = np.ones(len(training_data), dtype=np.float32)
 
         expanded_for_client = self._require_expansion(training_request.extra_payload, client_id)
         history_items_np = expanded_for_client.get("history_item_ids")
@@ -159,9 +253,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                         sum_emb[uid] += neighbor_emb_np[ell, n, :]
                         count_emb[uid] += 1
 
-        num_examples = len(item_ids_np)
         all_losses: List[float] = []
         num_training_examples = 0
+        trained_item_ids: set[int] = set(int(i) for i in pos_item_ids)
         if training_request.seed is None:
             rng = None
         else:
@@ -170,6 +264,11 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             )
 
         for _ in range(self.local_epochs):
+            item_ids_np, labels_np = self._build_epoch_samples(
+                pos_item_ids, pos_ratings, rng
+            )
+            trained_item_ids.update(int(i) for i in item_ids_np)
+            num_examples = len(item_ids_np)
             indices = np.arange(num_examples)
             if rng is None:
                 np.random.shuffle(indices)
@@ -177,7 +276,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                 rng.shuffle(indices)
 
             item_ids_np_shuffled = item_ids_np[indices]
-            ratings_np_shuffled = ratings_np[indices]
+            labels_np_shuffled = labels_np[indices]
 
             epoch_loss = 0.0
             num_batches = 0
@@ -190,8 +289,8 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                 b_item_ids = torch.as_tensor(
                     item_ids_np_shuffled[start:end], dtype=torch.long, device=device
                 )
-                b_ratings = torch.as_tensor(
-                    ratings_np_shuffled[start:end], dtype=torch.float32, device=device
+                b_labels = torch.as_tensor(
+                    labels_np_shuffled[start:end], dtype=torch.float32, device=device
                 )
 
                 b_hist_items = torch.as_tensor(
@@ -218,7 +317,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                     user_embedding=user_emb,
                     neighbor_embeddings=b_neighbor_emb,
                 )
-                loss = torch.mean((preds - b_ratings) ** 2)
+                loss = self._compute_loss(preds, b_labels)
                 loss.backward()
 
                 if self.neighbor_embeddings_trainable and b_neighbor_emb is not None and b_neighbor_emb.grad is not None and neighbor_user_ids_np is not None:
@@ -245,7 +344,7 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             for k, v in model.get_model_state().items()
         }
 
-        item_rows = set(int(i) for i in item_ids_np)
+        item_rows = set(trained_item_ids)
         if history_items_np is not None:
             item_rows.update(int(i) for i in np.asarray(history_items_np).reshape(-1))
         item_upload = self._embedding_upload(
@@ -298,7 +397,122 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             training_losses=all_losses,
             training_duration=time.time() - t0,
             num_training_examples=num_training_examples,
+            extra_response={"task": self.task},
         )
+
+    def _build_epoch_samples(
+        self,
+        pos_item_ids: np.ndarray,
+        pos_ratings: np.ndarray,
+        rng: np.random.Generator | None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Build one epoch of item ids and labels for the owner user.
+
+        Under ``task="rating"`` the observed rows are kept with their raw
+        ratings and no negatives are added. Under ``task="ranking"`` each
+        observed row is label 1 and ``neg_samples`` items the user has not
+        interacted with are sampled as label 0. Paper pseudo-items are not
+        sampled here: they never enter the loss.
+
+        Parameters
+        ----------
+        pos_item_ids : ndarray
+            Observed item ids, shape ``(n_pos,)``.
+        pos_ratings : ndarray
+            Raw ratings aligned with the positives. Ignored when
+            ``task="ranking"``.
+        rng : numpy.random.Generator or None
+            Seeded generator. ``None`` falls back to global ``np.random``.
+
+        Returns
+        -------
+        item_ids : ndarray
+            Item ids, shape ``(n_pos * (1 + neg_samples),)``.
+        labels : ndarray
+            Targets aligned with ``item_ids``. Ratings under
+            ``task="rating"``; 1/0 under ``task="ranking"``.
+
+        Raises
+        ------
+        RuntimeError
+            If ranking negatives are requested and the user has interacted
+            with every catalogue item, so no unobserved item exists.
+
+        Examples
+        --------
+        >>> client = FedPerGNNClientAlgorithm(task="ranking", neg_samples=0)
+        >>> client._num_items = 5
+        >>> items, y = client._build_epoch_samples(
+        ...     np.array([1]), np.array([4.0], dtype=np.float32), None)
+        >>> y
+        array([1.], dtype=float32)
+        """
+        n_pos = len(pos_item_ids)
+        n_neg = self.neg_samples if self.task == "ranking" else 0
+        n_total = n_pos * (1 + n_neg)
+        item_ids = np.empty(n_total, dtype=np.int64)
+        labels = np.empty(n_total, dtype=np.float32)
+        excl = {int(i) for i in pos_item_ids}
+        if n_neg > 0:
+            n_items = self._num_items
+            if n_items is None:
+                raise RuntimeError("ranking negatives require num_items to be set")
+            if n_items <= len(excl):
+                raise RuntimeError(
+                    "Cannot sample ranking negatives: the user has interacted "
+                    "with every catalogue item."
+                )
+
+        idx = 0
+        draw = np.random.randint if rng is None else rng.integers
+        for i in range(n_pos):
+            item_ids[idx] = int(pos_item_ids[i])
+            if self.task == "ranking":
+                labels[idx] = 1.0
+            else:
+                labels[idx] = float(pos_ratings[i])
+            idx += 1
+            for _ in range(n_neg):
+                neg_item = int(draw(0, n_items))
+                while neg_item in excl:
+                    neg_item = int(draw(0, n_items))
+                item_ids[idx] = neg_item
+                labels[idx] = 0.0
+                idx += 1
+        return item_ids[:idx], labels[:idx]
+
+    def _compute_loss(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Return the loss for the configured task.
+
+        Parameters
+        ----------
+        preds : torch.Tensor
+            Unbounded inner-product scores, shape ``(batch,)``.
+        targets : torch.Tensor
+            Ratings under ``task="rating"``; 0/1 under ``task="ranking"``.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar mean loss. MSE for rating, BCE-with-logits for ranking.
+
+        Raises
+        ------
+        RuntimeError
+            If ``self.task`` is not ``"rating"`` or ``"ranking"``. The
+            constructor already rejects unknown names, so this is a guard.
+
+        Examples
+        --------
+        >>> client = FedPerGNNClientAlgorithm()
+        >>> client._compute_loss(torch.zeros(2), torch.ones(2)).item()
+        1.0
+        """
+        if self.task == "ranking":
+            return torch.nn.functional.binary_cross_entropy_with_logits(preds, targets)
+        if self.task == "rating":
+            return torch.nn.functional.mse_loss(preds, targets)
+        raise RuntimeError(f"unrecognised task {self.task!r}")
 
     def compute_scores(
         self,
@@ -312,7 +526,8 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
         See ``BaseClientAlgorithm.compute_scores`` for the ranking-evaluation
         contract. This method returns scores only; it does not compute a
-        validation loss.
+        validation loss. Both tasks return unbounded inner products, which
+        ``FullRankingEvaluator`` ranks as higher-is-better.
 
         Parameters
         ----------
