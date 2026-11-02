@@ -11,6 +11,11 @@ put data size into who is selected; averaging those updates again by
 usual FedAvg pairing.
 
 ``replace=True`` (with-replacement draws) is not implemented.
+
+Seeded ``RandomClientSelection`` is a pure function of
+``(seed, round)``: a fresh instance with the same pair repeats that
+round. Round-robin and Power-of-Choice keep a cursor, permutation, or
+stored losses, so the next cohort depends on call history.
 """
 
 from __future__ import annotations
