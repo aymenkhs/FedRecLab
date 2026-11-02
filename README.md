@@ -79,6 +79,8 @@ print(evaluator.evaluate(
 ))
 ```
 
+Client algorithms, selectors, aggregators and evaluators are single-use: build new ones for every server. The dataset may be shared.
+
 ## Writing your own method
 
 Subclass `BaseFederatedServer` and `BaseClientAlgorithm`, declare how each parameter group is exchanged with `ParamIO`, and put method-specific logic in the server hooks. See `docs/PROJECT_CONTEXT.md` for the architecture and `AGENT.md` for conventions.
