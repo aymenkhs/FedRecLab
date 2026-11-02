@@ -314,6 +314,13 @@ def test_compatibility_table_warns_on_exact_class_pairs():
     rr = RoundRobinClientSelection(4, 2, seed=0)
     assert list(iter_selector_aggregator_warnings(rr, [FedAvg(4)])) != []
     assert list(iter_selector_aggregator_warnings(rr, [SimpleAvg(4)])) == []
+    poc_uniform = PowerOfChoiceClientSelection(4, 2, d=3, seed=0)
+    assert list(iter_selector_aggregator_warnings(poc_uniform, [FedAvg(4)])) == []
+    poc_weighted = PowerOfChoiceClientSelection(
+        4, 2, d=3, seed=0, weights={0: 1, 1: 2, 2: 3, 3: 4}
+    )
+    assert list(iter_selector_aggregator_warnings(poc_weighted, [FedAvg(4)])) != []
+    assert list(iter_selector_aggregator_warnings(poc_weighted, [SimpleAvg(4)])) == []
 
 
 def test_server_logs_pairing_warning(caplog):

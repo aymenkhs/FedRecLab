@@ -52,12 +52,13 @@ SELECTOR_AGGREGATOR_WARNINGS: dict[tuple[type, type], str] = {
 }
 
 # Optional extra gate. Missing key means always warn for that pair.
-# Uniform RandomClientSelection + FedAvg is the usual McMahan pairing;
-# only the size-weighted sampler double-counts data size with FedAvg.
+# Uniform RandomClientSelection or PowerOfChoiceClientSelection plus
+# FedAvg is the McMahan pairing: size is applied once, at aggregation.
 SELECTOR_AGGREGATOR_WARNING_WHEN: dict[
     tuple[type, type], Callable[[object, object], bool]
 ] = {
     (RandomClientSelection, FedAvg): lambda sel, _agg: sel.weights is not None,
+    (PowerOfChoiceClientSelection, FedAvg): lambda sel, _agg: sel.weights is not None,
 }
 
 
