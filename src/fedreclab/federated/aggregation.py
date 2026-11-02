@@ -85,6 +85,49 @@ def _masked_weighted_mean(
     return np.sum(values * w_norm.reshape(n, k, 1), axis=0)
 
 
+def _masked_sum(values: np.ndarray | dict, mask: np.ndarray) -> np.ndarray | dict:
+    """Sum over clients that have a row; non-senders add 0.
+
+    ``values`` is ``(n, k, d)`` or a dict of those. ``mask`` is ``(n, k)``.
+    A column with no True entry fails; that is a packing bug, not a
+    legitimate empty sum.
+
+    Parameters
+    ----------
+    values : ndarray or dict of ndarray
+        Packed client rows, shape ``(n, k, d)``.
+    mask : ndarray of bool, shape (n, k)
+        True where that client uploaded the column's row id.
+
+    Returns
+    -------
+    ndarray or dict of ndarray
+        Sum over axis 0, shape ``(k, d)``.
+
+    Raises
+    ------
+    ValueError
+        If any value is non-finite, or a packed row has no contributor.
+
+    Examples
+    --------
+    >>> _masked_sum(
+    ...     np.array([[[1.0]], [[3.0]]]),
+    ...     np.array([[True], [True]]),
+    ... )
+    array([[4.]])
+    """
+    if isinstance(values, dict):
+        return {key: _masked_sum(val, mask) for key, val in values.items()}
+    values = np.asarray(values)
+    _require_finite(values, "row-aggregation values")
+    n, k = mask.shape
+    contrib = mask.astype(np.float64).sum(axis=0)
+    if np.any(contrib <= 0):
+        raise ValueError("A packed row has no contributing client")
+    return np.sum(values * mask.astype(np.float64).reshape(n, k, 1), axis=0)
+
+
 def _masked_nanmedian(values: np.ndarray | dict, mask: np.ndarray) -> np.ndarray | dict:
     """Coordinate-wise median over contributing clients.
 
@@ -343,6 +386,153 @@ class SimpleAvg(FedAvg):
         n = mask.shape[0]
         weights = np.ones(n, dtype=np.float64)
         return _masked_weighted_mean(values, mask, weights)
+
+
+class Sum(BaseAggregation):
+    """Unweighted sum of client updates.
+
+    Method-agnostic: sums tensors or dict-of-tensors as given, without
+    inspecting ``ParamIO.exchange`` or the calling method. Pairing with
+    ``exchange="gradient"`` or ``"delta"`` is the experiment's job.
+
+    Needs only the sum of updates, not the individuals
+    (secure-aggregation compatible). ``previous_parameters`` and
+    ``num_training_examples`` are ignored.
+
+    For ``ParamIO.layout="rows"``, a client that did not send a row
+    contributes 0 to that row. Zero-valued dense uploads therefore match
+    omitting those rows.
+
+    Parameters
+    ----------
+    num_clients : int
+        Population size stored on ``BaseAggregation``.
+
+    Examples
+    --------
+    >>> info = RoundStatistics(
+    ...     current_round=0, selected=[0, 1], responded=[0, 1], dropped=[],
+    ...     num_training_examples={0: 1, 1: 1},
+    ...     training_losses={0: [], 1: []}, training_durations={0: 0.0, 1: 0.0},
+    ... )
+    >>> pio = ParamIO(residency="server", exchange="gradient", apply_to="server")
+    >>> Sum(2).aggregate(info, None, [np.array([1.0]), np.array([3.0])], pio)
+    array([4.])
+    """
+
+    def _sum_updates(self, updates: Any):
+        """Sum one group of client tensors or dict-of-tensors.
+
+        Parameters
+        ----------
+        updates : list or stacked array
+            Per-client values, already accepted by ``_iter_client_updates``.
+
+        Returns
+        -------
+        ndarray, Tensor, or dict
+            Elementwise sum, same layout and type as the first client.
+
+        Raises
+        ------
+        ValueError
+            If there are no updates, dict keys differ, or a value is
+            non-finite.
+        """
+        per_client = _iter_client_updates(updates)
+        if len(per_client) == 0:
+            raise ValueError("No client updates provided")
+
+        if isinstance(per_client[0], dict):
+            keys = _ensure_same_dict_keys(per_client)
+            out: dict[str, Any] = {}
+            for k in keys:
+                stacked = np.stack([_to_numpy(u[k]) for u in per_client], axis=0)
+                _require_finite(stacked, "Sum client updates")
+                summed = stacked.sum(axis=0)
+                like = per_client[0][k]
+                out[k] = (
+                    self._to_torch_like(summed, like)
+                    if isinstance(like, torch.Tensor)
+                    else summed
+                )
+            return out
+
+        stacked = np.stack([_to_numpy(u) for u in per_client], axis=0)
+        _require_finite(stacked, "Sum client updates")
+        summed = stacked.sum(axis=0)
+        like0 = per_client[0]
+        if isinstance(like0, torch.Tensor):
+            return self._to_torch_like(summed, like0)
+        return summed
+
+    def aggregate(
+        self,
+        round_info: RoundStatistics,
+        previous_parameters: Any,
+        updates: Any,
+        param_io: ParamIO,
+    ):
+        """Sum dense client updates.
+
+        Parameters
+        ----------
+        round_info : RoundStatistics
+            Unused; present for the aggregator interface.
+        previous_parameters : any
+            Unused.
+        updates : list or stacked array
+            Per-client tensors or dict-of-tensors.
+        param_io : ParamIO
+            Group declaration (unused).
+
+        Returns
+        -------
+        ndarray, Tensor, or dict
+            Elementwise sum over the client axis.
+
+        Raises
+        ------
+        ValueError
+            If there are no updates or a value is non-finite.
+        """
+        return self._sum_updates(updates)
+
+    def aggregate_rows(
+        self,
+        round_info: RoundStatistics,
+        previous_rows: Any,
+        values: np.ndarray | dict,
+        mask: np.ndarray,
+        param_io: ParamIO,
+    ):
+        """Masked sum over clients that uploaded each union row.
+
+        Parameters
+        ----------
+        round_info : RoundStatistics
+            Unused; present for the aggregator interface.
+        previous_rows : array or dict of arrays
+            Unused.
+        values : ndarray or dict of ndarray
+            Packed client rows, shape ``(n, k, d)``.
+        mask : ndarray of bool, shape (n, k)
+            True where that client uploaded the column's row id.
+        param_io : ParamIO
+            Group declaration (unused).
+
+        Returns
+        -------
+        ndarray or dict of ndarray
+            Summed rows, shape ``(k, d)``.
+
+        Raises
+        ------
+        ValueError
+            If a packed row has no contributor or a value is non-finite.
+        """
+        self.row_fallback_count = 0
+        return _masked_sum(values, mask)
 
 
 class Median(BaseAggregation):
