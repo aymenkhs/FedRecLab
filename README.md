@@ -14,7 +14,7 @@ FedRec papers ship code in different frameworks, with different splits, client p
 - **Federated core:** a round loop with hooks; per-parameter-group exchange rules (`ParamIO`); pluggable client selection and aggregation.
 - **Aggregators:** FedAvg, SimpleAvg, Median, TrimmedMean, FedAtt, Krum / Multi-Krum, Bulyan. Row-layout groups (`ParamIO.layout="rows"`) apply the same aggregator per embedding row.
 - **Evaluation:** full-ranking top-K metrics (HR, NDCG, Precision, Recall, …) computed per client.
-- **Methods:** FedNCF. FedPerGNN is being repaired; CdFed, FedMF, MetaMF, FedVAE, GPFedRec and SemiDFEGL are planned.
+- **Methods:** FedNCF, FedVAE, FedMF. FedPerGNN is being repaired; CdFed, MetaMF, GPFedRec and SemiDFEGL are planned.
 
 ## Install
 
@@ -88,6 +88,35 @@ Subclass `BaseFederatedServer` and `BaseClientAlgorithm`, declare how each param
 - `docs/PROJECT_CONTEXT.md`: architecture, design decisions, roadmap.
 - `docs/issues/`: known issues (core, FedPerGNN, CdFed).
 - `AGENT.md`: conventions for contributors and coding agents.
+
+## Roadmap
+
+- **Server-side optimisers (FedOpt family).** Groups exchanged as
+  `"gradient"` or `"delta"` are currently applied statelessly by the base
+  server (`w - lr * g` or `w + delta`). We plan a generic server optimiser
+  in `BaseFederatedServer` for those groups: server momentum (FedAvgM),
+  FedAdagrad, FedAdam and FedYogi (Reddi et al., ICLR 2021), with
+  configurable bias correction, per-row state for row-layout groups, and
+  learning-rate schedules.
+
+  Until then, any method can run its own server optimiser through the
+  apply hook. Declare the group with
+  `ParamIO(residency="server", exchange="gradient", apply_to="custom")`,
+  keep the optimiser state (moments, step counter) on the server, and
+  override `_apply_aggregated_result_custom` to turn the aggregated update
+  into the new `self.global_parameters[param_name]`. The aggregator is
+  unchanged and still swappable: it combines the client updates, and the
+  hook decides how that combined update moves the model. See
+  `src/fedreclab/methods/fedvae/fedvae.py` (server-side Adam on averaged
+  client gradients) for a complete example.
+
+- **Memory for full-model uploads (FedVAE).** Each selected client uploads
+  a dense gradient of the whole model, and the round loop holds every
+  upload before aggregating, so memory grows with
+  `clients_per_round * num_items`. Planned fix: accumulate dense
+  FedAvg/SimpleAvg/Sum without stacking, then stream mean-family
+  aggregation as uploads arrive. Krum and Bulyan still need the
+  individual updates.
 
 ## Licence
 
