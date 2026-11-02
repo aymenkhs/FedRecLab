@@ -42,6 +42,7 @@ Imports currently use the `src.fedreclab` root and must be run from the reposito
 11. Reproducibility: take randomness from seeded generators passed in from configuration, not from global `random` / `np.random` / unseeded torch.
 12. Any Function or class added should have a full docstring with expected parameters and returns, expetions raised and examples. Follow numpy syle docstring. A reader should know what each function does when reading it.
 13. Do not use 0 as a padding ID for items or users: 0 is a real ID after remapping. Shift indices or use explicit masks.
+14. Client algorithms, selectors, aggregators and evaluators are single-use: build new ones for every server. The dataset may be shared.
 
 ## 5. The round loop and hooks
 See `docs/PROJECT_CONTEXT.md` §3.3 for the exact order. Hooks available to subclasses:
