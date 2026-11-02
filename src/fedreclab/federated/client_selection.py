@@ -279,3 +279,176 @@ class RoundRobinClientSelection(BaseClientSelection):
             self._cursor += 1
         return chosen
 
+
+class PowerOfChoiceClientSelection(BaseClientSelection):
+    """rpow-d: sample ``d`` candidates by ``p_k``, keep the ``m`` highest stored losses.
+
+    Communication-free variant of Cho, Wang and Joshi (AISTATS 2022).
+    Candidates are drawn without replacement with probability ``p_k``.
+    The server never asks for a fresh loss: selected clients' mean of
+    ``training_losses`` (per-epoch batch means in FedRecLab, a slight
+    deviation from the paper's per-step mean) is stored in
+    ``on_round_end``. Unseen clients stay at ``+∞``, so they are
+    preferred until they have trained once.
+
+    Pair with ``SimpleAvg``. ``d = m`` reduces to weighted sampling
+    without replacement. ``d_schedule`` implements adapow-d by shrinking
+    ``d`` toward ``m``. pow-d / cpow-d need a pre-train eval phase and
+    are not implemented.
+
+    Information flow: the selector reads per-client losses
+    (``requires_individual_losses = True``). Under a future
+    ``aggregate_only`` visibility mode those scalars would travel
+    outside secure aggregation.
+
+    Parameters
+    ----------
+    num_clients : int
+        Population size ``K``.
+    number_selected_clients : int or float
+        ``m``.
+    d : int
+        Candidate-set size, ``m <= d <= K``.
+    selection_value_type : {"auto", "num", "frac"}, optional
+        How to interpret ``number_selected_clients``.
+    seed : int or None, optional
+        Seed of the owned generator.
+    weights : mapping or sequence or None, optional
+        Unnormalised ``p_k``. ``None`` is uniform.
+    d_schedule : callable or None, optional
+        ``d_schedule(current_round) -> d_t``, clamped to ``[m, K]``.
+
+    Attributes
+    ----------
+    last_loss : ndarray
+        Length-``K`` proxy losses, initialised to ``+∞``.
+    requires_individual_losses : bool
+        Always True for this class.
+
+    Raises
+    ------
+    ValueError
+        If ``d`` is outside ``[m, K]``, weights are invalid, or ``m``
+        exceeds the number of clients with positive weight.
+
+    Examples
+    --------
+    >>> poc = PowerOfChoiceClientSelection(5, 2, d=3, seed=0)
+    >>> len(poc.select(0))
+    2
+    """
+
+    requires_individual_losses = True
+
+    def __init__(
+        self,
+        num_clients,
+        number_selected_clients,
+        d: int,
+        selection_value_type="auto",
+        seed=None,
+        weights=None,
+        d_schedule: Callable[[int], int] | None = None,
+    ):
+        super().__init__(
+            num_clients, number_selected_clients, selection_value_type, seed=seed
+        )
+        self.d = int(d)
+        self.d_schedule = d_schedule
+        self.weights = weights
+        self.probabilities = _as_probability_vector(self.num_clients, weights)
+        self.last_loss = np.full(self.num_clients, np.inf, dtype=np.float64)
+        self._rng = None
+        m = self.number_selected_clients
+        if not m <= self.d <= self.num_clients:
+            raise ValueError(
+                f"d must satisfy m <= d <= K, got d={self.d}, "
+                f"m={m}, K={self.num_clients}"
+            )
+        n_positive = (
+            self.num_clients
+            if self.probabilities is None
+            else int(np.count_nonzero(self.probabilities))
+        )
+        if m > n_positive:
+            raise ValueError(
+                f"Cannot select {m} clients from {n_positive} "
+                f"clients with positive weight."
+            )
+
+    def _candidate_pool(self) -> tuple[np.ndarray, np.ndarray | None]:
+        """Ids that may be drawn, with renormalised probabilities.
+
+        Returns
+        -------
+        ids : ndarray
+            Client ids with positive weight (all ids if uniform).
+        p : ndarray or None
+            Probabilities on ``ids``, or ``None`` if uniform.
+        """
+        if self.probabilities is None:
+            return np.arange(self.num_clients), None
+        ids = np.flatnonzero(self.probabilities)
+        p = self.probabilities[ids]
+        p = p / p.sum()
+        return ids, p
+
+    def select(self, current_round=0):
+        """Draw ``d_t`` candidates and return the ``m`` with highest stored loss.
+
+        Parameters
+        ----------
+        current_round : int, optional
+            Passed to ``d_schedule`` if one was set.
+
+        Returns
+        -------
+        list of int
+            ``m`` unique client ids.
+        """
+        m = self.number_selected_clients
+        d_t = self.d if self.d_schedule is None else int(self.d_schedule(current_round))
+        d_t = int(np.clip(d_t, m, self.num_clients))
+        pool, p = self._candidate_pool()
+        d_t = min(d_t, int(pool.size))
+        if d_t < m:
+            raise ValueError(
+                f"Need {m} clients but only {d_t} candidates have positive weight"
+            )
+        rng = self._stored_rng()
+        candidates = rng.choice(pool, size=d_t, replace=False, p=p)
+        candidates = np.atleast_1d(candidates).astype(int, copy=False)
+        finite_share = float(np.isfinite(self.last_loss[candidates]).mean())
+        logger.info(
+            "Power-of-Choice round %s: %.3f of %s candidates have a finite stored loss",
+            current_round,
+            finite_share,
+            int(candidates.size),
+        )
+        tie = rng.random(candidates.size)
+        # lexsort: last key is primary, ascending. -loss puts +∞ first.
+        order = np.lexsort((-tie, -self.last_loss[candidates]))
+        chosen = candidates[order[:m]]
+        return [int(i) for i in chosen]
+
+    def on_round_end(self, current_round_statistics: RoundStatistics):
+        """Store each responding client's mean of ``training_losses``.
+
+        Parameters
+        ----------
+        current_round_statistics : RoundStatistics
+            Must include ``responded`` and ``training_losses``. Empty
+            loss lists are skipped so a silent client does not become
+            NaN.
+
+        Returns
+        -------
+        None
+        """
+        if current_round_statistics is None:
+            return
+        for cid in current_round_statistics.responded:
+            losses = current_round_statistics.training_losses.get(cid) or []
+            if len(losses) == 0:
+                continue
+            self.last_loss[int(cid)] = float(np.mean(losses))
