@@ -88,7 +88,6 @@ def _as_probability_vector(
 
 
 class BaseClientSelection:
-    def __init__(self, num_clients, number_selected_clients, selection_value_type='auto', seed=None):
     """Shared constructor for the number of clients drawn per round.
 
     Subclasses implement ``select``. ``on_round_start`` / ``on_round_end``
@@ -129,17 +128,24 @@ class BaseClientSelection:
     3
     """
 
+    def __init__(
+        self,
+        num_clients,
+        number_selected_clients,
+        selection_value_type="auto",
+        seed=None,
+    ):
         self.num_clients = num_clients
         self.seed = seed
-        if selection_value_type is None or selection_value_type == 'auto':
+        if selection_value_type is None or selection_value_type == "auto":
             if type(number_selected_clients) is float:
-                selection_value_type = 'frac'
+                selection_value_type = "frac"
             elif type(number_selected_clients) is int:
-                selection_value_type = 'num'
+                selection_value_type = "num"
             else:
                 raise ValueError("Invalid selection method")
 
-        if selection_value_type == 'frac':
+        if selection_value_type == "frac":
             if not 0 < number_selected_clients <= 1:
                 raise ValueError(
                     f"selection_value_type='frac' expects a fraction in (0, 1], "
@@ -147,7 +153,7 @@ class BaseClientSelection:
                     f"to select a fixed client count."
                 )
             self.number_selected_clients = int(num_clients * number_selected_clients)
-        elif selection_value_type == 'num':
+        elif selection_value_type == "num":
             self.number_selected_clients = number_selected_clients
         else:
             raise ValueError("Invalid selection method")
@@ -245,7 +251,7 @@ class FullClientSelection(BaseClientSelection):
         super().__init__(
             num_clients=num_clients,
             number_selected_clients=num_clients,
-            selection_value_type='num'
+            selection_value_type="num",
         )
 
     def select(self, current_round=0):
