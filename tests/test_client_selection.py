@@ -165,6 +165,13 @@ def test_all_zero_weights_raise():
         RandomClientSelection(3, 1, weights={0: 0.0, 1: 0.0, 2: 0.0})
 
 
+def test_non_finite_weights_raise():
+    with pytest.raises(ValueError, match="finite"):
+        RandomClientSelection(3, 1, weights={0: 1.0, 1: np.nan, 2: 1.0})
+    with pytest.raises(ValueError, match="finite"):
+        RandomClientSelection(3, 1, weights=[1.0, np.inf, 1.0])
+
+
 def test_round_robin_short_last_visits_each_client_once_per_cycle():
     rr = RoundRobinClientSelection(5, 2, seed=0, remainder="short_last")
     first = rr.select(0)
@@ -291,6 +298,12 @@ def test_power_of_choice_updates_loss_from_responded_clients():
     assert poc.last_loss[1] == pytest.approx(3.0)
     assert np.isinf(poc.last_loss[0])
     assert np.isinf(poc.last_loss[2])
+
+
+def test_power_of_choice_non_finite_mean_loss_raises():
+    poc = PowerOfChoiceClientSelection(3, 1, d=2, seed=0)
+    with pytest.raises(ValueError, match="not finite"):
+        poc.on_round_end(_round_stats([1], losses={1: [1.0, np.nan]}))
 
 
 def test_simpleavg_is_an_equal_mean():

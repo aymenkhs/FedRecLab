@@ -50,8 +50,8 @@ def _as_probability_vector(
     Raises
     ------
     ValueError
-        If a sequence has the wrong length, a weight is negative, an id
-        is out of range, or every weight is zero.
+        If a sequence has the wrong length, a weight is negative or
+        non-finite, an id is out of range, or every weight is zero.
 
     Examples
     --------
@@ -79,6 +79,8 @@ def _as_probability_vector(
                 f"got shape {arr.shape}"
             )
         p = arr
+    if not np.all(np.isfinite(p)):
+        raise ValueError("client weights must be finite")
     if np.any(p < 0):
         raise ValueError("client weights must be non-negative")
     total = float(p.sum())
@@ -778,6 +780,12 @@ class PowerOfChoiceClientSelection(BaseClientSelection):
         Returns
         -------
         None
+
+        Raises
+        ------
+        ValueError
+            If a responding client's mean training loss is not finite.
+            NaN would otherwise be sorted last by ``lexsort``.
         """
         if current_round_statistics is None:
             return
@@ -785,4 +793,9 @@ class PowerOfChoiceClientSelection(BaseClientSelection):
             losses = current_round_statistics.training_losses.get(cid) or []
             if len(losses) == 0:
                 continue
-            self.last_loss[int(cid)] = float(np.mean(losses))
+            mean = float(np.mean(losses))
+            if not np.isfinite(mean):
+                raise ValueError(
+                    f"client {cid} mean training loss is not finite: {mean}"
+                )
+            self.last_loss[int(cid)] = mean
