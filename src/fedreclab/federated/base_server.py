@@ -16,6 +16,7 @@ from src.fedreclab.federated.base_client import (
 )
 from src.fedreclab.federated.client_selection import BaseClientSelection
 from src.fedreclab.federated.aggregation import BaseAggregation
+from src.fedreclab.federated._compatibility_warnings import iter_selector_aggregator_warnings
 from src.fedreclab.federated.utils import RoundStatistics, ParamIO, is_row_update
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,13 @@ class BaseFederatedServer:
         else:
             raise ValueError(f"Invalid aggregation strategies: {aggregation_strategies}")
 
+        for message in iter_selector_aggregator_warnings(
+            self.client_selection_module, self.aggregation_strategies.values()
+        ):
+            logger.warning(message)
+
+        self.participation_counts = np.zeros(self.num_clients, dtype=np.int64)
+
         self.current_round_statistics = None
         self.previous_round_statistics = None
 
@@ -205,6 +213,44 @@ class BaseFederatedServer:
     def _post_selection_callback(self):
         pass
 
+    def _record_participation(self, selected_client_ids: List[int]) -> None:
+        """Increment per-client selection counts and log a coverage summary.
+
+        The INFO line reports how many clients were selected, the
+        min/max/mean of ``participation_counts``, and how many clients
+        have never been selected. The selected id list is logged at
+        DEBUG so cross-device runs do not dump thousands of ids each
+        round.
+
+        Parameters
+        ----------
+        selected_client_ids : list of int
+            Unique ids returned by this round's ``select``.
+
+        Returns
+        -------
+        None
+        """
+        for cid in selected_client_ids:
+            self.participation_counts[cid] += 1
+        counts = self.participation_counts
+        never = int(np.sum(counts == 0))
+        logger.info(
+            "Round %s selected %s clients; participation min/max/mean=%s/%s/%.3f; "
+            "never selected=%s",
+            self.current_round,
+            len(selected_client_ids),
+            int(counts.min()) if counts.size else 0,
+            int(counts.max()) if counts.size else 0,
+            float(counts.mean()) if counts.size else 0.0,
+            never,
+        )
+        logger.debug(
+            "Round %s selected client ids: %s",
+            self.current_round,
+            list(selected_client_ids),
+        )
+
     def run_round(self, current_round: int):
 
         # Run start of round callbacks
@@ -216,6 +262,7 @@ class BaseFederatedServer:
         # Select clients
         selected_client_ids = self.client_selection_module.select(self.current_round)
         self.selected_client_ids = selected_client_ids
+        self._record_participation(selected_client_ids)
         self._post_selection_callback()
 
         training_responses = []
