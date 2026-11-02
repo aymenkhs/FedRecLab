@@ -16,6 +16,7 @@ from src.fedreclab.federated.base_client import (
 )
 from src.fedreclab.federated.client_selection import BaseClientSelection
 from src.fedreclab.federated.aggregation import BaseAggregation
+from src.fedreclab.federated._compatibility_warnings import iter_selector_aggregator_warnings
 from src.fedreclab.federated.utils import RoundStatistics, ParamIO, is_row_update
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,10 @@ class BaseFederatedServer:
         else:
             raise ValueError(f"Invalid aggregation strategies: {aggregation_strategies}")
 
+        for message in iter_selector_aggregator_warnings(
+            self.client_selection_module, self.aggregation_strategies.values()
+        ):
+            logger.warning(message)
         self.current_round_statistics = None
         self.previous_round_statistics = None
 
