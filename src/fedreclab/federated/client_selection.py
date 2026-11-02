@@ -1,4 +1,17 @@
+"""Client selection strategies.
 
+A selector returns unique, valid client ids. Length is ``m`` except the
+short last cohort of round-robin.
+
+``RandomClientSelection`` draws uniformly, or without replacement with
+probability proportional to ``weights``. Size-weighted draws already
+put data size into who is selected; averaging those updates again by
+``num_training_examples`` (``FedAvg``) counts size twice. Use
+``SimpleAvg`` in that case. Uniform draws plus ``FedAvg`` is the
+usual FedAvg pairing.
+
+``replace=True`` (with-replacement draws) is not implemented.
+"""
 
 from __future__ import annotations
 
@@ -76,6 +89,46 @@ def _as_probability_vector(
 
 class BaseClientSelection:
     def __init__(self, num_clients, number_selected_clients, selection_value_type='auto', seed=None):
+    """Shared constructor for the number of clients drawn per round.
+
+    Subclasses implement ``select``. ``on_round_start`` / ``on_round_end``
+    are no-ops unless a selector needs round statistics (rpow-d).
+
+    Parameters
+    ----------
+    num_clients : int
+        Population size ``K``.
+    number_selected_clients : int or float
+        Count ``m`` when ``selection_value_type`` is ``"num"`` (or an
+        int in ``"auto"``). Fraction of ``K`` when the type is
+        ``"frac"`` (or a float in ``"auto"``).
+    selection_value_type : {"auto", "num", "frac"}, optional
+        How to interpret ``number_selected_clients``. Default ``"auto"``
+        treats ints as counts and floats as fractions.
+    seed : int or None, optional
+        Selector seed. ``None`` leaves seeding to a local generator or
+        to the server, which writes ``selector.seed = server.seed``
+        when this is still ``None``.
+
+    Attributes
+    ----------
+    number_selected_clients : int
+        Resolved ``m``.
+
+    Raises
+    ------
+    ValueError
+        If the resolved ``m`` is outside ``[1, K]``, or a fraction is
+        not in ``(0, 1]``.
+
+    Examples
+    --------
+    >>> BaseClientSelection(10, 0.2).number_selected_clients
+    2
+    >>> BaseClientSelection(10, 3, "num").number_selected_clients
+    3
+    """
+
         self.num_clients = num_clients
         self.seed = seed
         if selection_value_type is None or selection_value_type == 'auto':
@@ -109,12 +162,52 @@ class BaseClientSelection:
             )
 
     def select(self, current_round=0):
+        """Return the client ids that train this round.
+
+        Parameters
+        ----------
+        current_round : int, optional
+            Round index. Seeded uniform sampling folds this into the
+            RNG so the same round is reproducible on a fresh instance.
+
+        Returns
+        -------
+        list of int
+            Unique client ids.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; subclasses must override.
+        """
         raise NotImplementedError("Subclasses must implement this method")
 
     def on_round_start(self, previous_round_statistics: RoundStatistics):
+        """Hook before ``select``. Default is a no-op.
+
+        Parameters
+        ----------
+        previous_round_statistics : RoundStatistics
+            Statistics of the previous round, or ``None`` on round 0.
+
+        Returns
+        -------
+        None
+        """
         pass
 
     def on_round_end(self, current_round_statistics: RoundStatistics):
+        """Hook after aggregation. Default is a no-op.
+
+        Parameters
+        ----------
+        current_round_statistics : RoundStatistics
+            Statistics of the round that just finished.
+
+        Returns
+        -------
+        None
+        """
         pass
 
     def _stored_rng(self) -> np.random.Generator:
@@ -135,6 +228,19 @@ class BaseClientSelection:
 
 
 class FullClientSelection(BaseClientSelection):
+    """Every client trains every round.
+
+    Parameters
+    ----------
+    num_clients : int
+        Population size. ``m`` is set equal to this.
+
+    Examples
+    --------
+    >>> FullClientSelection(4).select()
+    [0, 1, 2, 3]
+    """
+
     def __init__(self, num_clients):
         super().__init__(
             num_clients=num_clients,
@@ -143,6 +249,18 @@ class FullClientSelection(BaseClientSelection):
         )
 
     def select(self, current_round=0):
+        """Return ``[0, 1, ..., K-1]``.
+
+        Parameters
+        ----------
+        current_round : int, optional
+            Ignored.
+
+        Returns
+        -------
+        list of int
+            Every client id.
+        """
         return list(range(self.num_clients))
 
 
