@@ -29,6 +29,15 @@ def test_selection_ignores_the_random_module():
     assert a == b
 
 
+def test_unseeded_selection_does_not_consume_global_numpy_rng():
+    np.random.seed(123)
+    RandomClientSelection(20, 5, "num").select()
+    got = np.random.rand(4)
+    np.random.seed(123)
+    expected = np.random.rand(4)
+    np.testing.assert_array_equal(got, expected)
+
+
 def test_negative_sampling_uses_the_passed_seed():
     client = FedNCFClientAlgorithm(neg_samples=3, predictive_factor=4)
     client.num_items = 8
