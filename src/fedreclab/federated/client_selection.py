@@ -455,8 +455,9 @@ class RoundRobinClientSelection(BaseClientSelection):
     Raises
     ------
     ValueError
-        If ``remainder`` is unknown, groups are empty, overlap, or
-        contain invalid ids, or ``clients_per_group`` exceeds a group.
+        If ``remainder`` is unknown, ``clients_per_group`` is set
+        without ``groups``, groups are empty, overlap, or contain
+        invalid ids, or ``clients_per_group`` exceeds a group.
 
     Examples
     --------
@@ -483,6 +484,11 @@ class RoundRobinClientSelection(BaseClientSelection):
         if remainder not in ("short_last", "wrap"):
             raise ValueError(
                 f"remainder must be 'short_last' or 'wrap', got {remainder!r}"
+            )
+        if clients_per_group is not None and groups is None:
+            raise ValueError(
+                "clients_per_group requires groups; without groups the "
+                "cohort size is number_selected_clients"
             )
         self.reshuffle_each_cycle = bool(reshuffle_each_cycle)
         self.remainder = remainder

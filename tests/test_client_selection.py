@@ -223,6 +223,11 @@ def test_round_robin_cycp_groups_visit_whole_groups_in_order():
     assert rr.select(2) == [0, 1, 2]
 
 
+def test_round_robin_clients_per_group_without_groups_raises():
+    with pytest.raises(ValueError, match="requires groups"):
+        RoundRobinClientSelection(6, 2, seed=0, clients_per_group=2)
+
+
 def test_round_robin_cycp_subsamples_each_group():
     rr = RoundRobinClientSelection(
         6, 2, seed=0, groups=[[0, 1, 2], [3, 4, 5]], clients_per_group=2
