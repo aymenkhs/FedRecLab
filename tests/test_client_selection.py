@@ -196,6 +196,17 @@ def test_round_robin_wrap_keeps_m_and_repeats():
     assert len(set(a + b)) <= 5
 
 
+def test_round_robin_wrap_reshuffle_ids_are_unique_each_round():
+    rr = RoundRobinClientSelection(
+        5, 3, seed=0, remainder="wrap", reshuffle_each_cycle=True
+    )
+    for r in range(200):
+        chosen = rr.select(r)
+        assert len(chosen) == 3
+        assert len(set(chosen)) == 3
+        assert all(0 <= cid < 5 for cid in chosen)
+
+
 def test_round_robin_cycp_groups_visit_whole_groups_in_order():
     rr = RoundRobinClientSelection(
         6, 2, seed=0, groups=[[0, 1, 2], [3, 4, 5]]

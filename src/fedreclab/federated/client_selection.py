@@ -415,7 +415,9 @@ class RoundRobinClientSelection(BaseClientSelection):
     * ``remainder="short_last"`` (default) keeps exactly-once coverage
       with a smaller final cohort.
     * ``remainder="wrap"`` always returns ``m`` ids by taking the rest
-      from the next cycle, which breaks exactly-once.
+      from the next cycle, which breaks exactly-once across rounds.
+      A mid-cohort reshuffle rotates ids already in the cohort to the
+      back of the new permutation so the round still has unique ids.
 
     With ``groups``, the given disjoint lists are CyCP groups visited in
     order. ``clients_per_group=None`` trains the whole group;
@@ -593,14 +595,21 @@ class RoundRobinClientSelection(BaseClientSelection):
             return list(chosen)
 
         chosen: list[int] = []
-        for _ in range(m):
-            if self._cursor >= len(order):
+        while len(chosen) < m:
+            if self._cursor >= len(self._order):
                 if self.reshuffle_each_cycle:
                     self._reshuffle()
-                    order = self._order
+                    # New permutation can put an already-chosen id first;
+                    # those would duplicate in this round. Keep unused ids
+                    # at the front; each id still appears once in the cycle.
+                    taken = set(chosen)
+                    self._order = (
+                        [c for c in self._order if c not in taken]
+                        + [c for c in self._order if c in taken]
+                    )
                 else:
                     self._cursor = 0
-            chosen.append(order[self._cursor])
+            chosen.append(self._order[self._cursor])
             self._cursor += 1
         return chosen
 
