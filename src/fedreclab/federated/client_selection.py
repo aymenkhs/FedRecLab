@@ -810,3 +810,232 @@ class PowerOfChoiceClientSelection(BaseClientSelection):
                     f"client {cid} mean training loss is not finite: {mean}"
                 )
             self.last_loss[int(cid)] = mean
+
+
+class ActvSampClientSelection(BaseClientSelection):
+    """ActvSAMP (Muhammad et al., KDD 2020 Algorithm 2): sample across clusters.
+
+    Clients are partitioned into groups ``G``. Each round draws
+    ``m // p`` clients uniformly without replacement from every
+    cluster (``p = |G|``, ``m = number_selected_clients``).
+
+    ``m`` must be divisible by ``p`` (both are experiment knobs). When a
+    cluster has fewer than ``m // p`` members — which can happen after
+    re-clustering — that cluster contributes all of its members and any
+    shortfall is filled uniformly without replacement from clients not
+    yet chosen. That fill rule is a documented deviation from Algorithm 2.
+
+    Groups must be installed with ``set_groups`` before the first
+    ``select``. FedFast refreshes groups after each ActvAGG recluster.
+
+    The paper's prose also mentions round-robin one-per-cluster sampling;
+    that variant is not implemented.
+
+    Parameters
+    ----------
+    num_clients : int
+        Population size ``K``.
+    number_selected_clients : int or float
+        Cohort size ``m``, or a fraction of ``K`` (see the base class).
+    selection_value_type : {"auto", "num", "frac"}, optional
+        How to interpret ``number_selected_clients``.
+    seed : int or None, optional
+        Seed of the owned generator used for within-cluster draws and
+        fill-ins.
+
+    Attributes
+    ----------
+    groups : list of list of int or None
+        Current partition ``G``, or ``None`` until ``set_groups``.
+    last_fill_count : int
+        Number of clients added by the undersized-cluster fill on the
+        most recent ``select`` (0 when every cluster had size
+        ``>= m // p``).
+
+    Raises
+    ------
+    ValueError
+        If ``select`` is called before ``set_groups``, if ``m`` is not
+        divisible by ``p``, if groups are invalid, or if fewer than
+        ``m`` distinct clients exist in the union of groups.
+
+    Examples
+    --------
+    >>> sel = ActvSampClientSelection(6, 3, seed=0)
+    >>> sel.set_groups([[0, 1], [2, 3], [4, 5]])
+    >>> chosen = sel.select(0)
+    >>> len(chosen) == 3 and len(set(chosen)) == 3
+    True
+    """
+
+    def __init__(
+        self,
+        num_clients,
+        number_selected_clients,
+        selection_value_type="auto",
+        seed=None,
+    ):
+        super().__init__(
+            num_clients, number_selected_clients, selection_value_type, seed=seed
+        )
+        self.groups: list[list[int]] | None = None
+        self.last_fill_count = 0
+        self._rng = None
+
+    def set_groups(self, groups: Sequence[Sequence[int]]) -> None:
+        """Install the client partition used by the next ``select``.
+
+        Parameters
+        ----------
+        groups : sequence of sequences of int
+            Disjoint non-empty clusters whose union is exactly
+            ``{0, ..., K-1}``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If a group is empty, ids overlap or fall outside
+            ``[0, K)``, the union misses a client, or ``m`` is not
+            divisible by the number of groups.
+
+        Examples
+        --------
+        >>> sel = ActvSampClientSelection(4, 2, seed=0)
+        >>> sel.set_groups([[0, 1], [2, 3]])
+        >>> len(sel.groups)
+        2
+        """
+        parsed = self._validate_groups(groups)
+        p = len(parsed)
+        m = self.number_selected_clients
+        if m % p != 0:
+            raise ValueError(
+                f"ActvSAMP requires m divisible by p (number of clusters), "
+                f"got m={m}, p={p}. Adjust number_selected_clients or the "
+                f"number of groups."
+            )
+        self.groups = parsed
+
+    def _validate_groups(self, groups: Sequence[Sequence[int]]) -> list[list[int]]:
+        """Check ActvSAMP groups and return them as lists of ints.
+
+        Parameters
+        ----------
+        groups : sequence of sequences of int
+            Proposed disjoint clusters covering the population.
+
+        Returns
+        -------
+        list of list of int
+            Copied groups.
+
+        Raises
+        ------
+        ValueError
+            If a group is empty, ids overlap or are out of range, or the
+            union is not exactly ``[0, K)``.
+        """
+        parsed: list[list[int]] = []
+        seen: set[int] = set()
+        for g in groups:
+            group = [int(cid) for cid in g]
+            if len(group) == 0:
+                raise ValueError("ActvSAMP groups must be non-empty")
+            for cid in group:
+                if cid < 0 or cid >= self.num_clients:
+                    raise ValueError(
+                        f"group id {cid} is outside [0, {self.num_clients})"
+                    )
+                if cid in seen:
+                    raise ValueError(f"client {cid} appears in more than one group")
+                seen.add(cid)
+            parsed.append(group)
+        if len(parsed) == 0:
+            raise ValueError("groups must contain at least one group")
+        if len(seen) != self.num_clients:
+            missing = sorted(set(range(self.num_clients)) - seen)
+            raise ValueError(
+                f"ActvSAMP groups must cover all {self.num_clients} clients; "
+                f"missing {missing[:10]}{'...' if len(missing) > 10 else ''}"
+            )
+        return parsed
+
+    def select(self, current_round=0):
+        """Draw ``m // p`` clients from each cluster, with fill if needed.
+
+        Parameters
+        ----------
+        current_round : int, optional
+            Ignored; the owned RNG is the only randomness source.
+
+        Returns
+        -------
+        list of int
+            ``m`` unique client ids.
+
+        Raises
+        ------
+        ValueError
+            If groups were not set, ``m`` is not divisible by ``p``, or
+            fewer than ``m`` clients are available.
+
+        Examples
+        --------
+        >>> sel = ActvSampClientSelection(6, 3, seed=0)
+        >>> sel.set_groups([[0, 1], [2, 3], [4, 5]])
+        >>> len(sel.select(0))
+        3
+        """
+        if self.groups is None:
+            raise ValueError(
+                "ActvSampClientSelection.select requires set_groups(...) "
+                "before the first call"
+            )
+        p = len(self.groups)
+        m = self.number_selected_clients
+        if m % p != 0:
+            raise ValueError(
+                f"ActvSAMP requires m divisible by p, got m={m}, p={p}"
+            )
+        k = m // p
+        rng = self._stored_rng()
+        chosen: list[int] = []
+        chosen_set: set[int] = set()
+        for group in self.groups:
+            take = min(k, len(group))
+            if take == 0:
+                continue
+            picks = rng.choice(group, size=take, replace=False)
+            for cid in np.atleast_1d(picks):
+                cid_i = int(cid)
+                chosen.append(cid_i)
+                chosen_set.add(cid_i)
+
+        fill = 0
+        if len(chosen) < m:
+            remaining = [c for c in range(self.num_clients) if c not in chosen_set]
+            need = m - len(chosen)
+            if need > len(remaining):
+                raise ValueError(
+                    f"Cannot fill ActvSAMP cohort to m={m}: only "
+                    f"{len(chosen) + len(remaining)} distinct clients available"
+                )
+            extras = rng.choice(remaining, size=need, replace=False)
+            for cid in np.atleast_1d(extras):
+                chosen.append(int(cid))
+            fill = need
+        self.last_fill_count = fill
+        if fill > 0:
+            logger.info(
+                "ActvSAMP round %s: filled %s clients after undersized clusters "
+                "(m=%s, p=%s)",
+                current_round,
+                fill,
+                m,
+                p,
+            )
+        return chosen
