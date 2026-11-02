@@ -953,3 +953,233 @@ class Bulyan(BaseAggregation):
         agg = bulyan_on_array(stacked)
         like0 = candidates[0]
         return self._to_torch_like(agg, like0) if isinstance(like0, torch.Tensor) else agg
+
+
+class ChangeMagnitudeAvg(BaseAggregation):
+    """Weighted average by L2 change from the previous parameters.
+
+    For each client update ``u_i`` and previous value ``prev``, the weight
+    is ``q_i = ||u_i - prev||_2``. Clients with ``q_i <= change_eps`` are
+    dropped; the remaining weights are renormalised and used for a
+    weighted mean of the absolute updates (not of the deltas).
+
+    This is the item-embedding rule from FedFast ActvAGG (Muhammad et al.,
+    KDD 2020, Algorithm 3 lines 5–12), exposed as a method-agnostic
+    aggregator. It is not FedAvg: weights come from change magnitude, not
+    ``num_training_examples``. Dict-of-tensor groups are scored **per
+    key** independently.
+
+    Needs individual updates and ``previous_parameters`` (not compatible
+    with sum-only secure aggregation).
+
+    Parameters
+    ----------
+    num_clients : int
+        Population size stored on ``BaseAggregation``.
+    change_eps : float, optional
+        Clients with L2 change at most this value are ignored. Default
+        is ``0.0`` (paper: strictly positive change).
+
+    Raises
+    ------
+    ValueError
+        If ``change_eps`` is negative, no client passes the threshold, a
+        value is non-finite, or shapes do not match ``previous``.
+
+    Examples
+    --------
+    >>> info = RoundStatistics(
+    ...     current_round=0, selected=[0, 1], responded=[0, 1], dropped=[],
+    ...     num_training_examples={0: 1, 1: 1},
+    ...     training_losses={0: [], 1: []}, training_durations={0: 0.0, 1: 0.0},
+    ... )
+    >>> pio = ParamIO(residency="server", exchange="params", apply_to="server")
+    >>> prev = np.array([0.0, 0.0])
+    >>> updates = [np.array([2.0, 0.0]), np.array([0.0, 1.0])]
+    >>> out = ChangeMagnitudeAvg(2).aggregate(info, prev, updates, pio)
+    >>> np.allclose(out, [4.0 / 3.0, 1.0 / 3.0])
+    True
+    """
+
+    def __init__(self, num_clients: int, change_eps: float = 0.0):
+        super().__init__(num_clients)
+        if change_eps < 0:
+            raise ValueError(f"change_eps must be >= 0, got {change_eps}")
+        self.change_eps = float(change_eps)
+        self._weigher = FedAvg(num_clients)
+
+    @staticmethod
+    def _l2_change(update: np.ndarray, previous: np.ndarray) -> float:
+        diff = np.asarray(update, dtype=np.float64) - np.asarray(
+            previous, dtype=np.float64
+        )
+        _require_finite(diff, "ChangeMagnitudeAvg update-previous difference")
+        return float(np.linalg.norm(diff.reshape(-1)))
+
+    def _weights_for_updates(
+        self,
+        previous_parameters: Any,
+        per_client: list[Any],
+    ) -> np.ndarray:
+        """Return renormalised change-magnitude weights for one tensor group."""
+        if isinstance(per_client[0], dict):
+            raise TypeError(
+                "ChangeMagnitudeAvg._weights_for_updates expects non-dict updates"
+            )
+        prev_np = _to_numpy(previous_parameters)
+        qs = np.array(
+            [self._l2_change(_to_numpy(u), prev_np) for u in per_client],
+            dtype=np.float64,
+        )
+        keep = qs > self.change_eps
+        if not np.any(keep):
+            raise ValueError(
+                "ChangeMagnitudeAvg: no client update exceeds change_eps="
+                f"{self.change_eps}"
+            )
+        weights = np.where(keep, qs, 0.0)
+        w_sum = float(weights.sum())
+        if w_sum <= 0:
+            raise ValueError("ChangeMagnitudeAvg weights must sum to a positive value")
+        return weights / w_sum
+
+    def aggregate(
+        self,
+        round_info: RoundStatistics,
+        previous_parameters: Any,
+        updates: Any,
+        param_io: ParamIO,
+    ):
+        """Average dense updates weighted by L2 change from ``previous``.
+
+        Parameters
+        ----------
+        round_info : RoundStatistics
+            Unused for weights; present for the aggregator interface.
+        previous_parameters : array or dict of arrays
+            Server (or prior) tensors before this round.
+        updates : list or stacked array
+            Per-client tensors, same layout as ``previous_parameters``.
+        param_io : ParamIO
+            Group declaration (unused).
+
+        Returns
+        -------
+        array or dict of arrays
+            Weighted mean of contributing updates.
+
+        Raises
+        ------
+        ValueError
+            If there are no updates, no client exceeds ``change_eps``, or
+            a value is non-finite.
+        TypeError
+            If updates are a dict but ``previous_parameters`` is not.
+        """
+        del round_info, param_io
+        per_client = _iter_client_updates(updates)
+        if len(per_client) == 0:
+            raise ValueError("No client updates provided")
+
+        if isinstance(per_client[0], dict):
+            keys = _ensure_same_dict_keys(per_client)
+            if not isinstance(previous_parameters, dict):
+                raise TypeError(
+                    "ChangeMagnitudeAvg: expected previous_parameters to be "
+                    "dict for dict updates"
+                )
+            missing = [k for k in keys if k not in previous_parameters]
+            if missing:
+                raise ValueError(
+                    f"ChangeMagnitudeAvg: previous_parameters missing keys {missing}"
+                )
+            out: dict[str, Any] = {}
+            for key in keys:
+                key_updates = [u[key] for u in per_client]
+                weights = self._weights_for_updates(
+                    previous_parameters[key], key_updates
+                )
+                out[key] = self._weigher._aggregate_with_weights(key_updates, weights)
+            return out
+
+        weights = self._weights_for_updates(previous_parameters, per_client)
+        return self._weigher._aggregate_with_weights(per_client, weights)
+
+    def aggregate_rows(
+        self,
+        round_info: RoundStatistics,
+        previous_rows: Any,
+        values: np.ndarray | dict,
+        mask: np.ndarray,
+        param_io: ParamIO,
+    ):
+        """Per-row change-magnitude weighted mean over contributing clients.
+
+        Parameters
+        ----------
+        round_info : RoundStatistics
+            Unused for weights.
+        previous_rows : array or dict of arrays
+            Previous table rows at the union indices, shape ``(k, d)``.
+        values : ndarray or dict of ndarray
+            Packed client rows, shape ``(n, k, d)``.
+        mask : ndarray of bool, shape (n, k)
+            True where that client uploaded the column's row id.
+        param_io : ParamIO
+            Group declaration (unused).
+
+        Returns
+        -------
+        ndarray or dict of ndarray
+            Aggregated rows, shape ``(k, d)``.
+
+        Raises
+        ------
+        ValueError
+            If a packed row has no contributor above ``change_eps``, or a
+            value is non-finite.
+        """
+        del round_info, param_io
+        self.row_fallback_count = 0
+        if isinstance(values, dict):
+            keys = list(values.keys())
+            return {
+                key: self._aggregate_rows_array(
+                    previous_rows[key], values[key], mask
+                )
+                for key in keys
+            }
+        return self._aggregate_rows_array(previous_rows, values, mask)
+
+    def _aggregate_rows_array(
+        self,
+        previous_rows: Any,
+        values: np.ndarray,
+        mask: np.ndarray,
+    ) -> np.ndarray:
+        prev = np.asarray(previous_rows)
+        vals = np.asarray(values)
+        _require_finite(vals, "ChangeMagnitudeAvg row-aggregation values")
+        _require_finite(prev, "ChangeMagnitudeAvg previous rows")
+        n, k = mask.shape
+        out = np.empty_like(prev, dtype=np.float64)
+        for j in range(k):
+            contrib = np.flatnonzero(mask[:, j])
+            if contrib.size == 0:
+                raise ValueError("Packed union contains a row with no contributors")
+            qs = np.zeros(n, dtype=np.float64)
+            for i in contrib:
+                qs[i] = self._l2_change(vals[i, j], prev[j])
+            keep = qs > self.change_eps
+            if not np.any(keep):
+                raise ValueError(
+                    "ChangeMagnitudeAvg: no client exceeds change_eps for a "
+                    f"packed row (change_eps={self.change_eps})"
+                )
+            w = np.where(keep, qs, 0.0)
+            w = w / w.sum()
+            # Broadcast weights over contributing clients only via full n vector.
+            out[j] = np.sum(vals * w.reshape(n, 1, 1), axis=0)[j]
+        if isinstance(previous_rows, torch.Tensor):
+            return self._to_torch_like(out, previous_rows)
+        return out.astype(prev.dtype, copy=False)
