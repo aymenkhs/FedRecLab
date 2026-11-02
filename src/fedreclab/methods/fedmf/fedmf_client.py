@@ -22,7 +22,10 @@ from src.fedreclab.federated.base_client import (
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import assert_skeleton_server_coverage
+from src.fedreclab.federated.utils import (
+    assert_skeleton_server_coverage,
+    flatten_grouped_state,
+)
 from src.fedreclab.methods.fedmf.fedmf_model import MatrixFactorization
 
 _LOCAL_UPDATES = ("sgd_sequential", "full_gradient")
@@ -37,10 +40,15 @@ _ITEM_WEIGHT = "item_embeddings.weight"
 class FedMFClientAlgorithm(BaseClientAlgorithm):
     """Local training and scoring for plaintext FedMF.
 
-    Each client holds its users' factor vectors. The server item table is
-    loaded from the payload each call. The uploaded group is a gradient
-    for ``item_embeddings``; FullText vs PartText is
+    Each client holds its users' factor vectors. The uploaded group is a
+    gradient for ``item_embeddings``; FullText vs PartText is
     ``request.param_ios["item_embeddings"].layout``, not a client flag.
+
+    ``local_train`` runs on CPU in NumPy float64: per-rating SGD is serial
+    in ``u``, so an accelerator only adds launch and sync overhead. It
+    gathers only the rows of items the client rated from the payload
+    table, and casts uploads back to that table's dtype. ``compute_scores``
+    uses the item-table skeleton on ``device``.
 
     Parameters
     ----------
@@ -271,15 +279,14 @@ class FedMFClientAlgorithm(BaseClientAlgorithm):
 
         Raises
         ------
+        KeyError
+            If the payload does not hold exactly ``item_embeddings.weight``.
         ValueError
-            If the training table has no ``rating`` column, a gradient is
-            non-finite, or ``loss_scale="global_M"`` is missing ``M``.
+            If the training table has no ``rating`` column, the item table
+            has the wrong shape, a value is non-finite, or
+            ``loss_scale="global_M"`` is missing ``M``.
         """
         t0 = time.time()
-        self.init_model_skeleton()
-        model = self._skeleton
-        device = self.device
-
         client_id = training_request.client_id
         client_state = training_request.client_state
         training_data = training_request.training_data
@@ -291,53 +298,55 @@ class FedMFClientAlgorithm(BaseClientAlgorithm):
                 "targets are not used."
             )
 
-        model.load_server_weights(training_request.global_payload)
-        item_table = model.item_embeddings.weight.detach()
-        user_table = torch.as_tensor(
-            client_state.local_parameters["user_embeddings"],
-            device=device,
-            dtype=item_table.dtype,
-        ).clone()
+        item_table = self._server_item_table(training_request.global_payload)
+        num_items = int(item_table.shape[0])
+        item_ids = training_data["item_id"].to_numpy(dtype=np.int64)
+        ratings = training_data["rating"].to_numpy(dtype=np.float64)
+        rows, local_items = np.unique(item_ids, return_inverse=True)
+        item_rows, upload_dtype = self._gather_item_rows(item_table, rows)
+
+        stored_users = torch.as_tensor(client_state.local_parameters["user_embeddings"])
+        user_table = np.array(
+            stored_users.detach().cpu().to(torch.float64).numpy()
+        )
 
         data_scale = self._data_scale(training_request)
+        user_step = (
+            self._sgd_sequential_user
+            if self.local_update == "sgd_sequential"
+            else self._full_gradient_user
+        )
+        user_positions = (
+            training_data.groupby("user_id", sort=False).indices
+            if len(training_data) > 0
+            else {}
+        )
         all_losses: list[float] = []
         num_training_examples = 0
-        grad_total = torch.zeros_like(item_table)
-        rated_items: set[int] = set()
+        grad_rows = np.zeros_like(item_rows)
 
         for _ in range(self.local_epochs):
-            epoch_sq = []
-            epoch_grad = torch.zeros_like(item_table)
-            n_this = 0
-            if len(training_data) > 0:
-                grouped = training_data.groupby("user_id", sort=False)
-                for user_id, group in grouped:
-                    local_uid = user_id_to_local[int(user_id)]
-                    u = user_table[local_uid]
-                    items = group["item_id"].to_numpy()
-                    ratings = group["rating"].to_numpy(dtype=np.float64)
-                    if self.local_update == "sgd_sequential":
-                        u, item_grad, sq, touched = self._sgd_sequential_user(
-                            u, item_table, items, ratings, data_scale
-                        )
-                    else:
-                        u, item_grad, sq, touched = self._full_gradient_user(
-                            u, item_table, items, ratings, data_scale
-                        )
-                    user_table[local_uid] = u
-                    epoch_grad = epoch_grad + item_grad
-                    epoch_sq.extend(sq)
-                    n_this += len(items)
-                    rated_items.update(touched)
-            grad_total = grad_total + epoch_grad
-            num_training_examples += n_this
+            epoch_sq: list[float] = []
+            for user_id, positions in user_positions.items():
+                local_uid = user_id_to_local[int(user_id)]
+                u, touched, row_grads, sq = user_step(
+                    user_table[local_uid],
+                    item_rows,
+                    local_items[positions],
+                    ratings[positions],
+                    data_scale,
+                )
+                user_table[local_uid] = u
+                grad_rows[touched] += row_grads
+                epoch_sq.extend(sq)
+            num_training_examples += len(item_ids)
             if epoch_sq:
                 all_losses.append(float(np.mean(epoch_sq)))
-            self._require_finite_tensor(user_table, "user factors")
-            self._require_finite_tensor(grad_total, "item-factor gradient")
+            self._require_finite(user_table, "user factors")
+            self._require_finite(grad_rows, "item-factor gradient")
 
         upload = self._item_gradient_upload(
-            training_request, grad_total, rated_items
+            training_request, rows, grad_rows, num_items, upload_dtype
         )
         updates_packages = {
             "item_embeddings": self._update_package(
@@ -347,7 +356,7 @@ class FedMFClientAlgorithm(BaseClientAlgorithm):
         updated_state = ClientStateBase(
             client_id=client_id,
             local_parameters={
-                "user_embeddings": user_table.detach().cpu().clone(),
+                "user_embeddings": torch.from_numpy(user_table).to(stored_users.dtype),
                 "user_id_to_local": user_id_to_local,
             },
             optimizer_state=None,
@@ -451,172 +460,274 @@ class FedMFClientAlgorithm(BaseClientAlgorithm):
             )
         return 1.0 / float(m)
 
-    def _sgd_sequential_user(
-        self,
-        u: torch.Tensor,
-        item_table: torch.Tensor,
-        items: np.ndarray,
-        ratings: np.ndarray,
-        data_scale: float,
-    ):
-        """Reference-code pass: assign per rated item, update ``u`` in place.
+    def _server_item_table(self, global_payload: dict[str, Any]) -> Any:
+        """Return the payload's item table after checking names and shape.
 
         Parameters
         ----------
-        u : torch.Tensor
-            Current user vector, shape ``(d,)``.
-        item_table : torch.Tensor
-            Downloaded ``V``, shape ``(n_items, d)``. Not written.
-        items : ndarray
-            Item ids in stored order.
-        ratings : ndarray
-            Ratings aligned with ``items``.
+        global_payload : dict
+            ParamIO groups from the server; must hold exactly
+            ``item_embeddings.weight``.
+
+        Returns
+        -------
+        torch.Tensor or ndarray
+            The item table ``V`` as sent, shape ``(num_items, latent_dim)``.
+            Not copied.
+
+        Raises
+        ------
+        KeyError
+            If the payload holds other or missing parameter names.
+        ValueError
+            If the table is not 2-D, its width is not ``latent_dim``, or
+            its height disagrees with ``num_items``.
+
+        Examples
+        --------
+        >>> client = FedMFClientAlgorithm(latent_dim=3)
+        >>> payload = {"item_embeddings": {"item_embeddings.weight": torch.zeros(5, 3)}}
+        >>> tuple(client._server_item_table(payload).shape)
+        (5, 3)
+        """
+        flat = flatten_grouped_state(global_payload)
+        if set(flat) != {_ITEM_WEIGHT}:
+            raise KeyError(
+                f"FedMF payload must hold exactly {_ITEM_WEIGHT!r}, "
+                f"got {sorted(flat)}"
+            )
+        table = flat[_ITEM_WEIGHT]
+        shape = tuple(table.shape)
+        if len(shape) != 2 or shape[1] != self.latent_dim:
+            raise ValueError(
+                f"Item table must have shape (num_items, {self.latent_dim}), "
+                f"got {shape}"
+            )
+        if self.num_items is not None and shape[0] != self.num_items:
+            raise ValueError(
+                f"Item table has {shape[0]} rows, expected num_items={self.num_items}"
+            )
+        return table
+
+    @staticmethod
+    def _gather_item_rows(item_table: Any, rows: np.ndarray) -> tuple[np.ndarray, torch.dtype]:
+        """Copy selected item rows to a float64 CPU array in one transfer.
+
+        Parameters
+        ----------
+        item_table : torch.Tensor or ndarray
+            Item table ``V``, shape ``(num_items, d)``, on any device.
+        rows : ndarray of int64
+            Item ids to gather.
+
+        Returns
+        -------
+        item_rows : ndarray of float64
+            ``V[rows]``, shape ``(len(rows), d)``.
+        table_dtype : torch.dtype
+            Dtype of ``item_table``, used to cast uploads back.
+
+        Examples
+        --------
+        >>> v = torch.arange(6, dtype=torch.float32).reshape(3, 2)
+        >>> item_rows, dtype = FedMFClientAlgorithm._gather_item_rows(v, np.array([2, 0]))
+        >>> item_rows.tolist(), dtype
+        ([[4.0, 5.0], [0.0, 1.0]], torch.float32)
+        """
+        if isinstance(item_table, torch.Tensor):
+            idx = torch.as_tensor(rows, dtype=torch.long, device=item_table.device)
+            gathered = item_table.detach()[idx].cpu()
+        else:
+            gathered = torch.as_tensor(np.asarray(item_table)[rows])
+        return gathered.to(torch.float64).numpy(), gathered.dtype
+
+    def _sgd_sequential_user(
+        self,
+        u: np.ndarray,
+        item_rows: np.ndarray,
+        local_items: np.ndarray,
+        ratings: np.ndarray,
+        data_scale: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[float]]:
+        """Reference-code pass: update ``u`` after each rating, assign item rows.
+
+        If an item occurs more than once, its last gradient wins, as in the
+        reference ``user_update``.
+
+        Parameters
+        ----------
+        u : ndarray of float64
+            Current user vector, shape ``(d,)``. Not written.
+        item_rows : ndarray of float64
+            Downloaded ``V`` restricted to the client's rated items, shape
+            ``(n_rated, d)``. Not written.
+        local_items : ndarray of int
+            Row indices into ``item_rows``, in stored rating order.
+        ratings : ndarray of float64
+            Ratings aligned with ``local_items``.
         data_scale : float
             Multiplier for the data term.
 
         Returns
         -------
-        u : torch.Tensor
+        u : ndarray of float64
             Updated user vector.
-        item_grad : torch.Tensor
-            Assigned item gradients, shape ``(n_items, d)``.
+        touched : ndarray of int64
+            Unique row indices into ``item_rows`` that received a gradient.
+        row_grads : ndarray of float64
+            Item gradients aligned with ``touched``, shape ``(len(touched), d)``.
         sq_errors : list of float
-            Squared residuals at each rating, before the ``u`` step.
-        touched : set of int
-            Rated item ids.
+            Squared residual at each rating, before the ``u`` step.
+
+        Examples
+        --------
+        >>> client = FedMFClientAlgorithm(lr=0.1, reg_u=0.0, reg_v=0.0)
+        >>> u, touched, g, sq = client._sgd_sequential_user(
+        ...     np.ones(2), np.eye(2), np.array([0]), np.array([3.0]), 1.0)
+        >>> u.tolist(), touched.tolist(), sq
+        ([1.4, 1.0], [0], [4.0])
         """
-        item_grad = torch.zeros_like(item_table)
+        data_coef = -2.0 * data_scale
+        reg_u_coef = 2.0 * self.reg_u if self.u_regularisation == "per_rating" else 0.0
+        reg_v_coef = 2.0 * self.reg_v if self.v_regularisation != "none" else 0.0
+        v_scale = self.lr if self.lr_placement == "client" else 1.0
+        assigned: dict[int, np.ndarray] = {}
         sq_errors: list[float] = []
-        touched: set[int] = set()
-        u = u.clone()
-        for item_id, rate in zip(items, ratings):
-            j = int(item_id)
-            v = item_table[j]
-            error = float(rate) - torch.dot(u, v)
-            sq_errors.append(float(error.detach().cpu() ** 2))
-            grad_u = data_scale * (-2.0 * error * v)
-            if self.u_regularisation == "per_rating":
-                grad_u = grad_u + 2.0 * self.reg_u * u
-            u = u - self.lr * grad_u
-            grad_v = data_scale * (-2.0 * error * u)
-            if self.v_regularisation != "none":
-                grad_v = grad_v + 2.0 * self.reg_v * v
-            if self.lr_placement == "client":
-                grad_v = self.lr * grad_v
-            item_grad[j] = grad_v
-            touched.add(j)
+        for j, rate in zip(local_items.tolist(), ratings.tolist()):
+            v = item_rows[j]
+            error = rate - float(u @ v)
+            sq_errors.append(error * error)
+            u = u - self.lr * (data_coef * error * v + reg_u_coef * u)
+            assigned[j] = v_scale * (data_coef * error * u + reg_v_coef * v)
         if self.u_regularisation == "once":
             u = u - self.lr * (2.0 * self.reg_u * u)
-        return u, item_grad, sq_errors, touched
+        touched = np.fromiter(assigned, dtype=np.int64, count=len(assigned))
+        if assigned:
+            row_grads = np.stack(list(assigned.values()))
+        else:
+            row_grads = np.zeros((0, item_rows.shape[1]))
+        return u, touched, row_grads, sq_errors
 
     def _full_gradient_user(
         self,
-        u: torch.Tensor,
-        item_table: torch.Tensor,
-        items: np.ndarray,
+        u: np.ndarray,
+        item_rows: np.ndarray,
+        local_items: np.ndarray,
         ratings: np.ndarray,
         data_scale: float,
-    ):
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[float]]:
         """Paper full-gradient step at ``(u^{t-1}, V^{t-1})``.
 
         Parameters
         ----------
-        u : torch.Tensor
-            Current user vector, shape ``(d,)``.
-        item_table : torch.Tensor
-            Downloaded ``V``, shape ``(n_items, d)``.
-        items : ndarray
-            Item ids.
-        ratings : ndarray
-            Ratings aligned with ``items``.
+        u : ndarray of float64
+            Current user vector, shape ``(d,)``. Not written.
+        item_rows : ndarray of float64
+            Downloaded ``V`` restricted to the client's rated items, shape
+            ``(n_rated, d)``. Not written.
+        local_items : ndarray of int
+            Row indices into ``item_rows``.
+        ratings : ndarray of float64
+            Ratings aligned with ``local_items``.
         data_scale : float
             Multiplier for the data term.
 
         Returns
         -------
-        u : torch.Tensor
+        u : ndarray of float64
             Updated user vector.
-        item_grad : torch.Tensor
-            Accumulated item gradients, shape ``(n_items, d)``.
+        touched : ndarray of int64
+            Unique row indices into ``item_rows`` that received a gradient.
+        row_grads : ndarray of float64
+            Summed item gradients aligned with ``touched``.
         sq_errors : list of float
             Squared residuals at ``(u^{t-1}, V)``.
-        touched : set of int
-            Rated item ids.
+
+        Examples
+        --------
+        >>> client = FedMFClientAlgorithm(lr=0.1, reg_u=0.0, reg_v=0.0,
+        ...                               local_update="full_gradient")
+        >>> u, touched, g, sq = client._full_gradient_user(
+        ...     np.ones(2), np.eye(2), np.array([0, 1]), np.array([3.0, 1.0]), 1.0)
+        >>> u.tolist(), sq
+        ([1.4, 1.0], [4.0, 0.0])
         """
-        if len(items) == 0:
-            return u, torch.zeros_like(item_table), [], set()
-        item_ids = torch.as_tensor(items, dtype=torch.long, device=u.device)
-        rates = torch.as_tensor(ratings, dtype=u.dtype, device=u.device)
-        v_rows = item_table[item_ids]
-        preds = (u * v_rows).sum(dim=-1)
-        errors = rates - preds
-        sq_errors = [float(x) for x in (errors.detach().cpu() ** 2).tolist()]
-        data_u = (data_scale * (-2.0 * errors)).unsqueeze(-1) * v_rows
-        data_v = (data_scale * (-2.0 * errors)).unsqueeze(-1) * u
-        grad_u = data_u.sum(dim=0)
+        if len(local_items) == 0:
+            return u, np.zeros(0, dtype=np.int64), np.zeros((0, item_rows.shape[1])), []
+        v_rows = item_rows[local_items]
+        errors = ratings - v_rows @ u
+        sq_errors = (errors ** 2).tolist()
+        coef = data_scale * (-2.0 * errors)
+        grad_u = coef @ v_rows
         if self.u_regularisation == "per_rating":
-            grad_u = grad_u + (2.0 * self.reg_u * u) * len(items)
+            grad_u = grad_u + (2.0 * self.reg_u * u) * len(local_items)
         else:
             grad_u = grad_u + 2.0 * self.reg_u * u
-        item_grad = torch.zeros_like(item_table)
-        item_grad.index_add_(0, item_ids, data_v)
+        touched, inverse = np.unique(local_items, return_inverse=True)
+        row_grads = np.zeros((len(touched), item_rows.shape[1]))
+        np.add.at(row_grads, inverse, coef[:, None] * u)
         if self.v_regularisation == "per_rating":
-            item_grad.index_add_(0, item_ids, (2.0 * self.reg_v) * v_rows)
+            np.add.at(row_grads, inverse, (2.0 * self.reg_v) * v_rows)
         elif self.v_regularisation == "once_rated":
-            unique = torch.unique(item_ids)
-            item_grad[unique] = item_grad[unique] + 2.0 * self.reg_v * item_table[unique]
+            row_grads += 2.0 * self.reg_v * item_rows[touched]
         if self.lr_placement == "client":
-            item_grad = self.lr * item_grad
+            row_grads = self.lr * row_grads
         u = u - self.lr * grad_u
-        touched = {int(j) for j in items}
-        return u, item_grad, sq_errors, touched
+        return u, touched.astype(np.int64), row_grads, sq_errors
 
     def _item_gradient_upload(
         self,
         training_request: ClientTrainingRequest,
-        dense_grad: torch.Tensor,
-        rated_items: set[int],
-    ):
+        rows: np.ndarray,
+        grad_rows: np.ndarray,
+        num_items: int,
+        dtype: torch.dtype,
+    ) -> dict[str, Any]:
         """Dense table or sparse ``{rows, values}`` from the effective layout.
 
         Parameters
         ----------
         training_request : ClientTrainingRequest
             Read for ``param_ios["item_embeddings"].layout``.
-        dense_grad : torch.Tensor
-            Full item-gradient table, shape ``(n_items, d)``.
-        rated_items : set of int
-            Item ids this client rated (PartText support).
+        rows : ndarray of int64
+            Sorted item ids this client rated (PartText support).
+        grad_rows : ndarray of float64
+            Item gradients aligned with ``rows``, shape ``(len(rows), d)``.
+        num_items : int
+            Height of the dense table for FullText.
+        dtype : torch.dtype
+            Dtype of the server item table; uploads are cast to it.
 
         Returns
         -------
         dict
             Either ``{item_embeddings.weight: table}`` or
-            ``{"rows": ids, "values": {item_embeddings.weight: rows}}``.
+            ``{"rows": ids, "values": {item_embeddings.weight: rows}}``,
+            with CPU tensors of ``dtype``.
+
+        Examples
+        --------
+        >>> up = client._item_gradient_upload(  # doctest: +SKIP
+        ...     request, np.array([1]), np.ones((1, 4)), 6, torch.float32)
+        >>> up["rows"].tolist()  # doctest: +SKIP
+        [1]
         """
         param_ios = training_request.param_ios or {}
         layout = getattr(param_ios.get("item_embeddings"), "layout", "rows")
-        table = dense_grad.detach()
+        values = torch.from_numpy(grad_rows).to(dtype)
         if layout == "dense":
-            return {_ITEM_WEIGHT: table.cpu().clone()}
-        rows = np.array(sorted(rated_items), dtype=np.int64)
-        if rows.size == 0:
-            values = table.new_zeros((0, table.shape[1]))
-        else:
-            idx = torch.as_tensor(rows, dtype=torch.long, device=table.device)
-            values = table[idx]
-        return {
-            "rows": rows,
-            "values": {_ITEM_WEIGHT: values.detach().cpu().clone()},
-        }
+            table = torch.zeros((num_items, grad_rows.shape[1]), dtype=dtype)
+            table[torch.from_numpy(rows)] = values
+            return {_ITEM_WEIGHT: table}
+        return {"rows": rows, "values": {_ITEM_WEIGHT: values}}
 
     @staticmethod
-    def _require_finite_tensor(tensor: torch.Tensor, where: str) -> None:
-        """Raise if ``tensor`` contains NaN or Inf.
+    def _require_finite(array: np.ndarray, where: str) -> None:
+        """Raise if ``array`` contains NaN or Inf.
 
         Parameters
         ----------
-        tensor : torch.Tensor
+        array : ndarray
             Values to check.
         where : str
             Label used in the error message.
@@ -629,6 +740,13 @@ class FedMFClientAlgorithm(BaseClientAlgorithm):
         ------
         ValueError
             If any value is non-finite.
+
+        Examples
+        --------
+        >>> FedMFClientAlgorithm._require_finite(np.array([np.nan]), "u")
+        Traceback (most recent call last):
+        ...
+        ValueError: Non-finite values in u
         """
-        if not torch.isfinite(tensor).all():
+        if not np.isfinite(array).all():
             raise ValueError(f"Non-finite values in {where}")
