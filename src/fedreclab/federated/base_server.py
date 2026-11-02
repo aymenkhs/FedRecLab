@@ -21,6 +21,10 @@ from src.fedreclab.federated.utils import RoundStatistics, ParamIO, is_row_updat
 
 logger = logging.getLogger(__name__)
 
+_ARITHMETIC_EXCHANGES = frozenset(
+    {"delta", "gradient", "encrypted_delta", "encrypted_gradient"}
+)
+
 
 class BaseFederatedServer:
     def __init__(
@@ -1003,21 +1007,82 @@ class BaseFederatedServer:
         param_io: ParamIO,
         param_name: str,
     ):
-        """
-        Apply aggregated_result to old_value according to param_io.exchange.
+        """Apply an aggregated result to a parameter value per ``param_io.exchange``.
 
-        Supported conventions:
-        - "params": aggregated_result is the new value
-        - "delta": old_value + aggregated_result
-        - "gradient": old_value - lr * aggregated_result
-        - "none": return old_value unchanged
+        Conventions:
 
-        Notes:
-        - For "gradient", this assumes client returns raw gradients.
-        - If your method returns optimizer-ready updates instead of raw gradients,
-        prefer using exchange="delta".
+        - ``"params"`` / ``"encrypted_params"``: the result is the new value.
+        - ``"delta"`` / ``"encrypted_delta"``: ``old_value + result``.
+        - ``"gradient"`` / ``"encrypted_gradient"``: ``old_value - lr * result``,
+          with ``lr`` from ``_get_server_update_lr``. Clients must upload raw
+          gradients; optimiser-ready steps should use ``"delta"``.
+        - ``"none"``: ``old_value`` is returned unchanged.
+
+        For the delta and gradient conventions, dict-of-tensor groups (e.g.
+        a state-dict slice) are applied key by key with the same rule and
+        learning rate. Params and none conventions do not inspect structure.
+
+        Parameters
+        ----------
+        old_value : array-like, torch.Tensor or dict
+            Current value of the group. A dict maps parameter names to
+            tensors or arrays.
+        aggregated_result : array-like, torch.Tensor or dict
+            Aggregator output. Must be a dict with the same keys when
+            ``old_value`` is a dict.
+        param_io : ParamIO
+            Declaration of the group; only ``exchange`` is read here.
+        param_name : str
+            Group name, used for the learning-rate lookup and error messages.
+
+        Returns
+        -------
+        array-like, torch.Tensor or dict
+            Updated value, with the same structure as ``old_value``.
+
+        Raises
+        ------
+        TypeError
+            If, for a delta or gradient exchange, exactly one of
+            ``old_value`` and ``aggregated_result`` is a dict.
+        ValueError
+            If, for a delta or gradient exchange, dict keys differ; or if
+            ``exchange`` is not a known convention.
+
+        Examples
+        --------
+        >>> io = ParamIO(residency="server", exchange="delta", apply_to="server")
+        >>> server._apply_exchange_to_value(
+        ...     {"w": np.ones(2)}, {"w": np.ones(2)}, io, "g"
+        ... )
+        {'w': array([2., 2.])}
         """
         exchange = getattr(param_io, "exchange", None)
+
+        if exchange in _ARITHMETIC_EXCHANGES and (
+            isinstance(old_value, dict) or isinstance(aggregated_result, dict)
+        ):
+            if not (isinstance(old_value, dict) and isinstance(aggregated_result, dict)):
+                raise TypeError(
+                    f"Group '{param_name}': cannot apply exchange='{exchange}' "
+                    f"between {type(old_value).__name__} (current value) and "
+                    f"{type(aggregated_result).__name__} (aggregated result)"
+                )
+            if set(old_value) != set(aggregated_result):
+                raise ValueError(
+                    f"Group '{param_name}': aggregated keys "
+                    f"{sorted(aggregated_result)} do not match parameter keys "
+                    f"{sorted(old_value)}"
+                )
+            return {
+                key: self._apply_exchange_to_value(
+                    old_value=old_value[key],
+                    aggregated_result=aggregated_result[key],
+                    param_io=param_io,
+                    param_name=param_name,
+                )
+                for key in old_value
+            }
 
         if exchange == "params":
             return aggregated_result

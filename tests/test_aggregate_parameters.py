@@ -2,8 +2,9 @@
 
 import numpy as np
 import pytest
+import torch
 
-from src.fedreclab.federated.aggregation import BaseAggregation
+from src.fedreclab.federated.aggregation import BaseAggregation, Sum
 from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
 from src.fedreclab.federated.base_server import BaseFederatedServer
 from src.fedreclab.federated.utils import ParamIO, RoundStatistics, UpdatePackage
@@ -160,6 +161,75 @@ def test_unknown_package_name_raises():
 
     with pytest.raises(KeyError, match="typo"):
         server.aggregate_parameters(responses)
+
+
+def _dense_dict_server(exchange, server_learning_rate=1.0):
+    param_io = ParamIO(
+        residency="server", exchange=exchange, apply_to="server", layout="dense"
+    )
+    server = _stub_server(
+        param_ios={"g": param_io},
+        global_parameters={
+            "g": {"w": torch.ones(2, 2), "b": torch.zeros(2)},
+        },
+        aggregators={"g": Sum(num_clients=2)},
+        selected=[0, 1],
+    )
+    server.training_framework = "torch"
+    server.server_learning_rate = server_learning_rate
+    return server, param_io
+
+
+def _dense_dict_updates():
+    return [
+        {"w": torch.full((2, 2), 0.5), "b": torch.ones(2)},
+        {"w": torch.full((2, 2), 0.25), "b": torch.ones(2)},
+    ]
+
+
+def test_dense_dict_group_gradient_exchange_steps_each_key():
+    server, param_io = _dense_dict_server("gradient", server_learning_rate=2.0)
+
+    server._aggregate_group("g", param_io, _dense_dict_updates(), [0, 1])
+
+    new = server.global_parameters["g"]
+    assert set(new) == {"w", "b"}
+    torch.testing.assert_close(new["w"], torch.full((2, 2), 1.0 - 2.0 * 0.75))
+    torch.testing.assert_close(new["b"], torch.full((2,), -4.0))
+
+
+def test_dense_dict_group_delta_exchange_adds_each_key():
+    server, param_io = _dense_dict_server("delta")
+
+    server._aggregate_group("g", param_io, _dense_dict_updates(), [0, 1])
+
+    new = server.global_parameters["g"]
+    torch.testing.assert_close(new["w"], torch.full((2, 2), 1.75))
+    torch.testing.assert_close(new["b"], torch.full((2,), 2.0))
+
+
+def test_dense_dict_group_mismatched_keys_raise():
+    server, param_io = _dense_dict_server("delta")
+
+    with pytest.raises(ValueError, match="do not match parameter keys"):
+        server._apply_exchange_to_value(
+            old_value=server.global_parameters["g"],
+            aggregated_result={"w": torch.zeros(2, 2)},
+            param_io=param_io,
+            param_name="g",
+        )
+
+
+def test_dense_dict_group_against_tensor_result_raises():
+    server, param_io = _dense_dict_server("gradient")
+
+    with pytest.raises(TypeError, match="cannot apply exchange='gradient'"):
+        server._apply_exchange_to_value(
+            old_value=server.global_parameters["g"],
+            aggregated_result=torch.zeros(2, 2),
+            param_io=param_io,
+            param_name="g",
+        )
 
 
 def test_convert_to_framework_compatible_is_protected():
