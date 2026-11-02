@@ -47,6 +47,13 @@ class BaseFederatedServer:
         param_io_overrides: Dict[str, dict] | None = None,
         seed: int | None = None,
     ):
+        self._bind_components(
+            client_algorithm,
+            client_selection_strategy,
+            aggregation_strategies,
+            evaluator,
+        )
+
         self.interaction_dataset = interaction_dataset
 
         self.num_clients = interaction_dataset.num_clients
@@ -143,6 +150,89 @@ class BaseFederatedServer:
 
         self.global_parameters = {}
         self.global_parameters = self._initialize_server_parameters()
+
+    @staticmethod
+    def _bind_components(
+        client_algorithm: BaseClientAlgorithm,
+        client_selection_strategy: BaseClientSelection,
+        aggregation_strategies: BaseAggregation | Dict[str, BaseAggregation],
+        evaluator: Evaluator | None,
+    ) -> None:
+        """Mark run-stateful components as owned by one server.
+
+        Client algorithms, selectors, aggregators and evaluators keep
+        run-specific state (seeds, item counts, cursors, round state,
+        cached candidates), and several fields are filled in only when
+        unset. Reusing one object in a second server would silently
+        carry that state into the new run, so each component may be
+        bound to a single server. The binding is permanent: it is
+        stored on the component as ``_bound_server = True`` and is not
+        cleared when the server is deleted, because the component's
+        state is not cleared either. Copies made with ``copy.deepcopy``
+        inherit the flag for the same reason.
+
+        All components are checked before any is bound, so a rejected
+        call leaves fresh components usable. One aggregator object may
+        serve several parameter groups of the same server; aggregators
+        are deduplicated by identity. Objects that are not instances of
+        the expected base classes are skipped here and left to the
+        constructor's type validation. The ``InteractionDataset`` is
+        not bound and may be shared between servers.
+
+        Parameters
+        ----------
+        client_algorithm : BaseClientAlgorithm
+            Client behaviour object passed to the server.
+        client_selection_strategy : BaseClientSelection
+            Client selector passed to the server.
+        aggregation_strategies : BaseAggregation or dict of str to BaseAggregation
+            One aggregator for every group, or one per group name.
+        evaluator : Evaluator or None
+            Evaluator passed to the server, if any.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        ValueError
+            If any component is already bound to another server.
+
+        Examples
+        --------
+        >>> client = MyClientAlgorithm()  # doctest: +SKIP
+        >>> server_a = MyServer(client_algorithm=client, ...)  # doctest: +SKIP
+        >>> server_b = MyServer(client_algorithm=client, ...)  # doctest: +SKIP
+        Traceback (most recent call last):
+        ValueError: MyClientAlgorithm instance is already used by another server; construct a new instance for each server.
+        """
+        if isinstance(aggregation_strategies, BaseAggregation):
+            aggregators = [aggregation_strategies]
+        elif isinstance(aggregation_strategies, dict):
+            aggregators = list(aggregation_strategies.values())
+        else:
+            aggregators = []
+
+        candidates = [
+            (client_algorithm, BaseClientAlgorithm),
+            (client_selection_strategy, BaseClientSelection),
+            *((aggregator, BaseAggregation) for aggregator in aggregators),
+            (evaluator, Evaluator),
+        ]
+        components = {}
+        for component, expected_type in candidates:
+            if isinstance(component, expected_type):
+                components.setdefault(id(component), component)
+
+        for component in components.values():
+            if getattr(component, "_bound_server", False):
+                raise ValueError(
+                    f"{type(component).__name__} instance is already used by "
+                    "another server; construct a new instance for each server."
+                )
+        for component in components.values():
+            component._bound_server = True
 
     def _initialize_client_states(self):
         for client_id in range(self.num_clients):
