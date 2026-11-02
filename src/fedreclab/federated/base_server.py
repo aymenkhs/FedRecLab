@@ -118,6 +118,9 @@ class BaseFederatedServer:
             self.client_selection_module, self.aggregation_strategies.values()
         ):
             logger.warning(message)
+
+        self.participation_counts = np.zeros(self.num_clients, dtype=np.int64)
+
         self.current_round_statistics = None
         self.previous_round_statistics = None
 
@@ -210,6 +213,33 @@ class BaseFederatedServer:
     def _post_selection_callback(self):
         pass
 
+    def _record_participation(self, selected_client_ids: List[int]) -> None:
+        """Increment per-client selection counts and log a coverage summary.
+
+        Parameters
+        ----------
+        selected_client_ids : list of int
+            Unique ids returned by this round's ``select``.
+
+        Returns
+        -------
+        None
+        """
+        for cid in selected_client_ids:
+            self.participation_counts[cid] += 1
+        counts = self.participation_counts
+        never = int(np.sum(counts == 0))
+        logger.info(
+            "Round %s selected %s; participation min/max/mean=%s/%s/%.3f; "
+            "never selected=%s",
+            self.current_round,
+            list(selected_client_ids),
+            int(counts.min()) if counts.size else 0,
+            int(counts.max()) if counts.size else 0,
+            float(counts.mean()) if counts.size else 0.0,
+            never,
+        )
+
     def run_round(self, current_round: int):
 
         # Run start of round callbacks
@@ -221,6 +251,7 @@ class BaseFederatedServer:
         # Select clients
         selected_client_ids = self.client_selection_module.select(self.current_round)
         self.selected_client_ids = selected_client_ids
+        self._record_participation(selected_client_ids)
         self._post_selection_callback()
 
         training_responses = []
