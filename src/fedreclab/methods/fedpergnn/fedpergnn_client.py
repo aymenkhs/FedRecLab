@@ -330,7 +330,8 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         Returns
         -------
         dict of int to ndarray
-            Predicted scores per user, aligned with that user's candidates.
+            Unbounded inner-product scores per user, aligned with that
+            user's candidates. Higher is better.
 
         Raises
         ------

@@ -1,9 +1,49 @@
+"""GAT skeleton and inner-product predictor for FedPerGNN.
+
+Wu et al., Nature Communications 2022. The supplementary information
+uses a graph attention network and a dot-product rating predictor
+:math:`\\hat y_{ij} = h_i^u \\cdot h_{i,j}^t`. The public Keras copy
+instead applies ``Dense(1, sigmoid)`` to ``concat([user, item])``. That
+head is additive: within a user, ranking reduces to a function of the
+item vector alone. This module follows the paper, not that GitHub head.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class FedPerGNNModel(nn.Module):
+    """Server-resident GAT and item table; the owner user row is passed in.
+
+    History and neighbour attention build a user hidden state that does
+    not depend on the target item. The score is the inner product of that
+    state and the target item embedding (SI predictor). There is no
+    concat-linear output layer and no output sigmoid: ranking order of
+    an inner product is unchanged by a monotone map, and rating
+    regression needs an unbounded score.
+
+    The sigmoid on ``history_item_proj`` is a hidden activation from the
+    Keras GAT, not the predictor. Target items that are not in the local
+    subgraph use the item embedding; they have no per-user GNN item node.
+
+    Parameters
+    ----------
+    num_items : int
+        Catalogue size after ``InteractionDataset`` remapping.
+    hidden_dim : int
+        Width of embeddings and GAT hidden states.
+    history_len : int
+        Padded history length ``L``.
+    neighbor_len : int
+        Padded neighbour count ``N`` per history item.
+
+    Examples
+    --------
+    >>> m = FedPerGNNModel(num_items=3, hidden_dim=4, history_len=2, neighbor_len=1)
+    >>> "output_layer.weight" in m.get_server_state()
+    False
+    """
 
     def __init__(
         self,
@@ -48,9 +88,6 @@ class FedPerGNNModel(nn.Module):
 
         # Combine history-based user representation with base user embedding.
         self.user_final_proj = nn.Linear(2 * hidden_dim, hidden_dim)
-
-        # Final predictor over [user_repr, target_item_emb]
-        self.output_layer = nn.Linear(2 * hidden_dim, 1)
 
         self._reset_parameters()
 
@@ -119,16 +156,36 @@ class FedPerGNNModel(nn.Module):
         user_embedding: torch.Tensor,
         neighbor_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """
-        Forward pass.
+        """Score each target item against this user's GAT hidden state.
 
-        Args:
-            item_ids: (B,) int64
-            history_item_ids: (B, L) int64
-            user_embedding: (1, H) or (H,) client-resident user row
-            neighbor_embeddings: (B, L, N, H) float32, or None. When None,
-                neighbors are ignored and only item history drives the user
-                representation.
+        History and neighbour tensors may be repeated across the batch;
+        they must not depend on the target id. The returned scores are
+        unbounded inner products (higher is better).
+
+        Parameters
+        ----------
+        item_ids : torch.Tensor
+            Target item ids, shape ``(B,)``, dtype int64.
+        history_item_ids : torch.Tensor
+            Padded history ids, shape ``(B, L)``, dtype int64.
+        user_embedding : torch.Tensor
+            Client-resident owner row, shape ``(H,)`` or ``(1, H)``.
+        neighbor_embeddings : torch.Tensor or None, optional
+            Neighbour rows, shape ``(B, L, N, H)``. ``None`` skips the
+            neighbour GAT and uses projected history items only.
+
+        Returns
+        -------
+        torch.Tensor
+            Scores of shape ``(B,)``.
+
+        Examples
+        --------
+        >>> m = FedPerGNNModel(num_items=5, hidden_dim=4, history_len=2, neighbor_len=1)
+        >>> items = torch.tensor([1, 2])
+        >>> hist = torch.tensor([[1, 2], [1, 2]])
+        >>> m(items, hist, torch.zeros(4)).shape
+        torch.Size([2])
         """
         batch_size = item_ids.size(0)
 
@@ -194,7 +251,7 @@ class FedPerGNNModel(nn.Module):
         # Combine with base user embedding
         u_final = self.user_final_proj(torch.cat([u_hist, u_base], dim=-1))  # (B, H)
 
-        out = self.output_layer(torch.cat([u_final, item_emb], dim=-1))  # (B, 1)
-        out = torch.sigmoid(out).squeeze(-1)  # (B,)
-        return out
+        # SI predictor ŷ = h_u · e_i. A linear layer on the concat is
+        # additive: ranking inside a user ignores h_u.
+        return (u_final * item_emb).sum(dim=-1)
 

@@ -38,6 +38,13 @@ class FedPerGNN(BaseFederatedServer):
       edits no longer become your next local starting point. Plaintext sparse
       item uploads reveal which items this client trained on.
 
+    Deviations from Wu et al.:
+      The rating predictor is the SI inner product of the user hidden
+      state and the target item embedding. The public Keras repo's
+      concat-plus-``Dense(1, sigmoid)`` head is not used. Training is
+      still MSE on observed ratings while the library evaluator reports
+      ranking metrics; the paper reports RMSE.
+
     Neighbour expansion and the initial user table use ``expansion_seed`` if
     set, otherwise the server ``seed``. Both default to None (unseeded).
     """
