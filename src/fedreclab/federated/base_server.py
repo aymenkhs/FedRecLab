@@ -216,6 +216,12 @@ class BaseFederatedServer:
     def _record_participation(self, selected_client_ids: List[int]) -> None:
         """Increment per-client selection counts and log a coverage summary.
 
+        The INFO line reports how many clients were selected, the
+        min/max/mean of ``participation_counts``, and how many clients
+        have never been selected. The selected id list is logged at
+        DEBUG so cross-device runs do not dump thousands of ids each
+        round.
+
         Parameters
         ----------
         selected_client_ids : list of int
@@ -230,14 +236,19 @@ class BaseFederatedServer:
         counts = self.participation_counts
         never = int(np.sum(counts == 0))
         logger.info(
-            "Round %s selected %s; participation min/max/mean=%s/%s/%.3f; "
+            "Round %s selected %s clients; participation min/max/mean=%s/%s/%.3f; "
             "never selected=%s",
             self.current_round,
-            list(selected_client_ids),
+            len(selected_client_ids),
             int(counts.min()) if counts.size else 0,
             int(counts.max()) if counts.size else 0,
             float(counts.mean()) if counts.size else 0.0,
             never,
+        )
+        logger.debug(
+            "Round %s selected client ids: %s",
+            self.current_round,
+            list(selected_client_ids),
         )
 
     def run_round(self, current_round: int):

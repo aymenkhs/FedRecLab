@@ -28,14 +28,17 @@ def test_record_participation_accumulates_across_rounds():
     np.testing.assert_array_equal(server.participation_counts, [1, 2, 0, 1])
 
 
-def test_record_participation_logs_coverage_summary(caplog):
+def test_record_participation_logs_summary_at_info_and_ids_at_debug(caplog):
     server = _server()
-    caplog.set_level(logging.INFO, logger="src.fedreclab.federated.base_server")
+    caplog.set_level(logging.DEBUG, logger="src.fedreclab.federated.base_server")
     server._record_participation([0, 2])
-    assert (
-        "Round 0 selected [0, 2]; participation min/max/mean=0/1/0.500; "
+    info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    assert info == [
+        "Round 0 selected 2 clients; participation min/max/mean=0/1/0.500; "
         "never selected=2"
-    ) in caplog.text
+    ]
+    assert debug == ["Round 0 selected client ids: [0, 2]"]
 
 
 def test_record_participation_empty_selection_leaves_counts_unchanged(caplog):
@@ -44,6 +47,7 @@ def test_record_participation_empty_selection_leaves_counts_unchanged(caplog):
     server._record_participation([])
     np.testing.assert_array_equal(server.participation_counts, [0, 0, 0, 0])
     assert (
-        "Round 0 selected []; participation min/max/mean=0/0/0.000; "
+        "Round 0 selected 0 clients; participation min/max/mean=0/0/0.000; "
         "never selected=4"
     ) in caplog.text
+    assert "selected client ids" not in caplog.text
