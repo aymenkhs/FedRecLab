@@ -307,12 +307,16 @@ def test_compatibility_table_warns_on_exact_class_pairs():
     )
     msgs = list(iter_selector_aggregator_warnings(weighted, [FedAvg(4)]))
     assert len(msgs) == 1
-    assert "num_training_examples" in msgs[0]
+    assert "counts data size twice" in msgs[0]
+    assert "Use SimpleAvg" in msgs[0]
     assert list(iter_selector_aggregator_warnings(weighted, [SimpleAvg(4)])) == []
     uniform = RandomClientSelection(4, 2)
     assert list(iter_selector_aggregator_warnings(uniform, [FedAvg(4)])) == []
     rr = RoundRobinClientSelection(4, 2, seed=0)
-    assert list(iter_selector_aggregator_warnings(rr, [FedAvg(4)])) != []
+    rr_msgs = list(iter_selector_aggregator_warnings(rr, [FedAvg(4)]))
+    assert rr_msgs
+    assert "plain mean" in rr_msgs[0]
+    assert "Use SimpleAvg" in rr_msgs[0]
     assert list(iter_selector_aggregator_warnings(rr, [SimpleAvg(4)])) == []
     poc_uniform = PowerOfChoiceClientSelection(4, 2, d=3, seed=0)
     assert list(iter_selector_aggregator_warnings(poc_uniform, [FedAvg(4)])) == []

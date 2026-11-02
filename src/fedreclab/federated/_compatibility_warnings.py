@@ -38,16 +38,21 @@ from src.fedreclab.federated.client_selection import (
 SELECTOR_AGGREGATOR_WARNINGS: dict[tuple[type, type], str] = {
     (RandomClientSelection, FedAvg): (
         "RandomClientSelection(weights=...) already samples by client "
-        "size; FedAvg also weights updates by num_training_examples."
+        "size; FedAvg also weights updates by num_training_examples, "
+        "which counts data size twice. Use SimpleAvg unless this is "
+        "intended."
     ),
     (RoundRobinClientSelection, FedAvg): (
         "RoundRobinClientSelection visits clients equally often; "
-        "FedAvg then weights their updates by num_training_examples."
+        "FedAvg then weights their updates by num_training_examples. "
+        "Both source analyses (CyCP, RR-CLI) use a plain mean. Use "
+        "SimpleAvg for the faithful configuration."
     ),
     (PowerOfChoiceClientSelection, FedAvg): (
         "PowerOfChoiceClientSelection already uses client weights when "
         "drawing candidates; FedAvg also weights updates by "
-        "num_training_examples."
+        "num_training_examples, which counts data size twice. Use "
+        "SimpleAvg unless this is intended."
     ),
 }
 
@@ -90,7 +95,7 @@ def iter_selector_aggregator_warnings(
     >>> from src.fedreclab.federated.client_selection import RoundRobinClientSelection
     >>> sel = RoundRobinClientSelection(4, 2, seed=0)
     >>> next(iter_selector_aggregator_warnings(sel, [FedAvg(4)]))
-    'RoundRobinClientSelection visits clients equally often; FedAvg then weights their updates by num_training_examples.'
+    'RoundRobinClientSelection visits clients equally often; FedAvg then weights their updates by num_training_examples. Both source analyses (CyCP, RR-CLI) use a plain mean. Use SimpleAvg for the faithful configuration.'
     """
     seen: set[str] = set()
     key_sel = type(selector)
