@@ -22,9 +22,11 @@ def _payload(num_items, latent_dim, fill=0.01):
 
 @pytest.fixture
 def fedmf_client_and_request():
-    """Build a CPU FedMF client with one local user and two ratings.
+    """Build a CPU FedMF client; by default one local user and two ratings.
 
-    Returns a factory: ``make(**kwargs) -> (client, request)``.
+    Returns a factory: ``make(**kwargs) -> (client, request)``. The client
+    owns every user present in ``training_data`` unless ``users_in_client``
+    is given.
     """
 
     def make(**kwargs):
@@ -39,15 +41,18 @@ def fedmf_client_and_request():
             ),
         )
         param_ios = kwargs.pop("param_ios", default_param_ios())
+        users = kwargs.pop(
+            "users_in_client", sorted(int(u) for u in data["user_id"].unique())
+        )
         client = FedMFClientAlgorithm(latent_dim=latent_dim, **kwargs)
         client.device = torch.device("cpu")
         local = client.initialize_local_parameters(
             client_id=0,
-            total_num_users=1,
-            num_users=1,
+            total_num_users=len(users),
+            num_users=len(users),
             num_items=num_items,
             client_train_data_view=data,
-            users_in_client=[0],
+            users_in_client=users,
         )
         state = ClientStateBase(
             client_id=0, local_parameters=local, optimizer_state=None
@@ -55,7 +60,7 @@ def fedmf_client_and_request():
         request = ClientTrainingRequest(
             client_id=0,
             current_round=0,
-            users_in_client=[0],
+            users_in_client=users,
             client_state=state,
             global_payload=_payload(num_items, latent_dim, fill),
             training_data=data,

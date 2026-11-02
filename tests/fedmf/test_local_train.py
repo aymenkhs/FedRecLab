@@ -23,6 +23,54 @@ def _github_user_update(u, ratings, item_vector, lr, reg_u, reg_v):
     return u, gradient
 
 
+_ITEM_WEIGHT = "item_embeddings.weight"
+
+# Two users sharing item 2, with ratings interleaved in stored order.
+_TWO_USERS = pd.DataFrame(
+    {
+        "user_id": [0, 1, 0, 1],
+        "item_id": [1, 4, 2, 2],
+        "rating": [4.0, 3.0, 5.0, 1.0],
+    }
+)
+
+
+def _dense_param_ios():
+    return {
+        "item_embeddings": ParamIO(
+            residency="server",
+            exchange="gradient",
+            apply_to="server",
+            layout="dense",
+        )
+    }
+
+
+def _set_item_table(request, table):
+    request.global_payload["item_embeddings"][_ITEM_WEIGHT] = table.clone()
+
+
+def _random_item_table(num_items=6, latent_dim=4, seed=0):
+    generator = torch.Generator().manual_seed(seed)
+    return 0.5 * torch.randn(num_items, latent_dim, generator=generator)
+
+
+def _uploaded_dense(response, num_items):
+    """Item gradient upload as a dense float64 table, whatever its layout."""
+    up = response.updates_packages["item_embeddings"].param_value
+    if "rows" not in up:
+        return np.asarray(up[_ITEM_WEIGHT], dtype=np.float64)
+    values = np.asarray(up["values"][_ITEM_WEIGHT], dtype=np.float64)
+    table = np.zeros((num_items, values.shape[1]))
+    table[np.asarray(up["rows"])] = values
+    return table
+
+
+def _user_vector(response, user_id):
+    local = response.updated_client_state.local_parameters
+    return local["user_embeddings"][local["user_id_to_local"][user_id]]
+
+
 def test_defaults_follow_the_reference_code():
     client = FedMFClientAlgorithm()
     assert client.local_update == "sgd_sequential"
@@ -110,6 +158,140 @@ def test_fulltext_zeros_match_parttext_on_rated_rows(fedmf_client_and_request):
     np.testing.assert_allclose(full_table[rows], part_vals, rtol=1e-6, atol=1e-6)
     unrated = np.setdiff1d(np.arange(6), rows)
     np.testing.assert_allclose(full_table[unrated], 0.0, atol=1e-7)
+
+
+@pytest.mark.parametrize("local_update", ["sgd_sequential", "full_gradient"])
+def test_multi_user_client_sums_item_gradients_across_users(
+    fedmf_client_and_request, local_update
+):
+    hp = dict(lr=0.05, reg_u=0.1, reg_v=0.2, local_update=local_update)
+    table = _random_item_table(seed=0)
+    client, request = fedmf_client_and_request(training_data=_TWO_USERS, **hp)
+    _set_item_table(request, table)
+    resp = client.local_train(request)
+
+    expected = np.zeros((6, 4))
+    for uid in (0, 1):
+        own_rows = _TWO_USERS[_TWO_USERS["user_id"] == uid].reset_index(drop=True)
+        single, req = fedmf_client_and_request(training_data=own_rows, **hp)
+        _set_item_table(req, table)
+        single_resp = single.local_train(req)
+        expected += _uploaded_dense(single_resp, 6)
+        torch.testing.assert_close(
+            _user_vector(resp, uid), _user_vector(single_resp, uid)
+        )
+
+    uploaded = resp.updates_packages["item_embeddings"].param_value
+    assert np.asarray(uploaded["rows"]).tolist() == [1, 2, 4]
+    np.testing.assert_allclose(
+        _uploaded_dense(resp, 6), expected, rtol=1e-5, atol=1e-7
+    )
+    assert resp.num_training_examples == 4
+
+
+def test_local_epochs_carry_user_factors_and_sum_item_gradients(
+    fedmf_client_and_request,
+):
+    epochs = 3
+    client, request = fedmf_client_and_request(
+        lr=0.05, reg_u=0.1, reg_v=0.2, local_epochs=epochs
+    )
+    table = _random_item_table(seed=1)
+    _set_item_table(request, table)
+    v = table.numpy().astype(np.float64)
+    u_ref = request.client_state.local_parameters["user_embeddings"][0].numpy()
+    g_ref = np.zeros_like(v)
+    for _ in range(epochs):
+        u_ref, g = _github_user_update(
+            u_ref, [(1, 4.0), (2, 5.0)], v, client.lr, client.reg_u, client.reg_v
+        )
+        g_ref += g
+
+    resp = client.local_train(request)
+    np.testing.assert_allclose(
+        _user_vector(resp, 0).numpy(), u_ref, rtol=1e-5, atol=1e-6
+    )
+    uploaded = resp.updates_packages["item_embeddings"].param_value
+    assert np.asarray(uploaded["rows"]).tolist() == [1, 2]
+    np.testing.assert_allclose(
+        _uploaded_dense(resp, 6), g_ref, rtol=1e-5, atol=1e-7
+    )
+    assert resp.num_training_examples == epochs * 2
+    assert len(resp.training_losses) == epochs
+
+
+@pytest.mark.parametrize("local_update", ["sgd_sequential", "full_gradient"])
+def test_local_epochs_equal_chained_single_epoch_calls(
+    fedmf_client_and_request, local_update
+):
+    hp = dict(
+        lr=0.05,
+        reg_u=0.1,
+        reg_v=0.2,
+        local_update=local_update,
+        training_data=_TWO_USERS,
+    )
+    table = _random_item_table(seed=2)
+    multi, req_multi = fedmf_client_and_request(local_epochs=2, **hp)
+    _set_item_table(req_multi, table)
+    resp = multi.local_train(req_multi)
+
+    single, req = fedmf_client_and_request(**hp)
+    _set_item_table(req, table)
+    expected = np.zeros((6, 4))
+    for _ in range(2):
+        step = single.local_train(req)
+        expected += _uploaded_dense(step, 6)
+        req.client_state = step.updated_client_state
+
+    np.testing.assert_allclose(
+        _uploaded_dense(resp, 6), expected, rtol=1e-5, atol=1e-7
+    )
+    for uid in (0, 1):
+        torch.testing.assert_close(_user_vector(resp, uid), _user_vector(step, uid))
+    assert resp.num_training_examples == 2 * len(_TWO_USERS)
+
+
+@pytest.mark.parametrize("local_update", ["sgd_sequential", "full_gradient"])
+def test_fulltext_matches_parttext_for_multi_user_multi_epoch(
+    fedmf_client_and_request, local_update
+):
+    hp = dict(
+        lr=0.05,
+        reg_u=0.1,
+        reg_v=0.2,
+        local_epochs=2,
+        local_update=local_update,
+        training_data=_TWO_USERS,
+    )
+    table = _random_item_table(seed=3)
+    part, req_part = fedmf_client_and_request(**hp)
+    full, req_full = fedmf_client_and_request(param_ios=_dense_param_ios(), **hp)
+    _set_item_table(req_part, table)
+    _set_item_table(req_full, table)
+    part_resp = part.local_train(req_part)
+    full_resp = full.local_train(req_full)
+
+    part_up = part_resp.updates_packages["item_embeddings"].param_value
+    full_table = full_resp.updates_packages["item_embeddings"].param_value[
+        _ITEM_WEIGHT
+    ]
+    rows = np.asarray(part_up["rows"])
+    assert full_table.shape == (6, 4)
+    assert full_table.dtype == part_up["values"][_ITEM_WEIGHT].dtype
+    torch.testing.assert_close(
+        full_table[torch.from_numpy(rows)],
+        part_up["values"][_ITEM_WEIGHT],
+        rtol=0.0,
+        atol=0.0,
+    )
+    unrated = torch.from_numpy(np.setdiff1d(np.arange(6), rows))
+    assert torch.count_nonzero(full_table[unrated]) == 0
+    for uid in (0, 1):
+        torch.testing.assert_close(
+            _user_vector(full_resp, uid), _user_vector(part_resp, uid),
+            rtol=0.0, atol=0.0,
+        )
 
 
 def test_full_gradient_item_grad_uses_old_u(fedmf_client_and_request):
