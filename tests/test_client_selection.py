@@ -14,6 +14,7 @@ from src.fedreclab.federated.aggregation import FedAvg, SimpleAvg
 from src.fedreclab.federated.base_client import BaseClientAlgorithm
 from src.fedreclab.federated.base_server import BaseFederatedServer
 from src.fedreclab.federated.client_selection import (
+    ActvSampClientSelection,
     FullClientSelection,
     PowerOfChoiceClientSelection,
     RandomClientSelection,
@@ -410,3 +411,47 @@ def test_selectors_ignore_the_random_module():
     random.seed(99)
     d = RoundRobinClientSelection(**kwargs).select(0)
     assert c == d
+
+
+def test_actvsamp_requires_set_groups_before_select():
+    sel = ActvSampClientSelection(6, 3, seed=0)
+    with pytest.raises(ValueError, match="set_groups"):
+        sel.select(0)
+
+
+def test_actvsamp_rejects_m_not_divisible_by_p():
+    sel = ActvSampClientSelection(6, 4, seed=0)
+    with pytest.raises(ValueError, match="divisible"):
+        sel.set_groups([[0, 1], [2, 3], [4, 5]])
+
+
+def test_actvsamp_one_per_cluster_when_m_equals_p():
+    sel = ActvSampClientSelection(6, 3, seed=0)
+    groups = [[0, 1], [2, 3], [4, 5]]
+    sel.set_groups(groups)
+    chosen = sel.select(0)
+    assert len(chosen) == 3
+    assert len(set(chosen)) == 3
+    for group in groups:
+        assert sum(1 for c in chosen if c in group) == 1
+    assert sel.last_fill_count == 0
+
+
+def test_actvsamp_reproducible_with_seed():
+    groups = [[0, 1], [2, 3], [4, 5]]
+    a = ActvSampClientSelection(6, 3, seed=7)
+    b = ActvSampClientSelection(6, 3, seed=7)
+    a.set_groups(groups)
+    b.set_groups(groups)
+    assert a.select(0) == b.select(0)
+
+
+def test_actvsamp_fills_when_a_cluster_is_undersized():
+    # m=4, p=2 -> k=2, but first cluster has only one client.
+    sel = ActvSampClientSelection(5, 4, seed=0)
+    sel.set_groups([[0], [1, 2, 3, 4]])
+    chosen = sel.select(0)
+    assert len(chosen) == 4
+    assert len(set(chosen)) == 4
+    assert 0 in chosen
+    assert sel.last_fill_count >= 1
