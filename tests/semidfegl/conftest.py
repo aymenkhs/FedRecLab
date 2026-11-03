@@ -3,13 +3,13 @@
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.aggregation import FedAvg
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.methods.semidfegl.semidfegl import SemiDFEGL
-from src.fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.aggregation import FedAvg
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.methods.semidfegl.semidfegl import SemiDFEGL
+from fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
 
 EMBEDDING_DIM = 4
 NUM_ITEMS = 8

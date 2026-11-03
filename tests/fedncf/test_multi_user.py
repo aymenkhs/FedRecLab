@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import nn
 
-from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
+from fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
 
 # users_in_client order is the row order: 5 -> 0, 2 -> 1.
 _USERS = [5, 2]

@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.fedreclab.federated.utils import flatten_grouped_state
+from fedreclab.federated.utils import flatten_grouped_state
 
 
 class NeuralCollaborativeFiltering(nn.Module):

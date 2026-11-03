@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 
-from src.fedreclab.federated.base_client import ClientStateBase
-from src.fedreclab.methods.gpfedrec.gpfedrec_model import predict_logits
+from fedreclab.federated.base_client import ClientStateBase
+from fedreclab.methods.gpfedrec.gpfedrec_model import predict_logits
 
 
 def _with_table(state, table):

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+from fedreclab.federated.utils import ParamIO, UpdatePackage
 
 
 @dataclass

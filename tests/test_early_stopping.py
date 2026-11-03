@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.base_server import BaseFederatedServer
 
 
 def _patience_server(early_stopping=True, parameters=None, custom=False):

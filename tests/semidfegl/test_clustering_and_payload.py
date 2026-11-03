@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import pytest
 
-from src.fedreclab.federated.client_selection import (
+from fedreclab.federated.client_selection import (
     FullClientSelection,
     RandomClientSelection,
 )
@@ -104,7 +104,7 @@ def test_fake_training_positive_is_not_a_bpr_negative(make_server):
 def test_non_full_selector_logs_and_does_not_raise(make_server, caplog):
     dataset = make_server().interaction_dataset
     # Rebuild with a random selector; binding requires a fresh client.
-    from src.fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
+    from fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
 
     client = SemiDFEGLClientAlgorithm(embedding_dim=4, num_layers=1)
     with caplog.at_level(logging.INFO):
@@ -122,8 +122,8 @@ def test_non_full_selector_logs_and_does_not_raise(make_server, caplog):
 
 
 def test_zero_or_several_users_raises(make_tiny_dataset, make_server):
-    from src.fedreclab.data.client_partitioning import ClientPartition
-    from src.fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
+    from fedreclab.data.client_partitioning import ClientPartition
+    from fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
 
     dataset = make_tiny_dataset(n_users=2)
     # Corrupt the partition so client 0 owns two users.

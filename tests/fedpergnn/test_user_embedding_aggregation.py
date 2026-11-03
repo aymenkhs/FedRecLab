@@ -3,11 +3,11 @@
 import numpy as np
 import pytest
 
-from src.fedreclab.federated.aggregation import SimpleAvg
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import RoundStatistics, UpdatePackage
-from src.fedreclab.methods.fedpergnn.fedpergnn import default_param_ios
+from fedreclab.federated.aggregation import SimpleAvg
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import RoundStatistics, UpdatePackage
+from fedreclab.methods.fedpergnn.fedpergnn import default_param_ios
 
 
 def _stub(table):

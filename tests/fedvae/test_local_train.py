@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.methods.fedvae.fedvae_model import MultVAE
+from fedreclab.methods.fedvae.fedvae_model import MultVAE
 
 
 def test_upload_keys_and_shapes_match_server_state(fedvae_client_and_request):

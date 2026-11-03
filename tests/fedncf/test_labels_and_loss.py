@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from src.fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
+from fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
 
 
 def test_paper_defaults_are_binary_bce_and_four_negatives():

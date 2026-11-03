@@ -2,7 +2,7 @@
 
 import torch
 
-from src.fedreclab.methods.fedfast.fedfast_model import GeneralMatrixFactorization
+from fedreclab.methods.fedfast.fedfast_model import GeneralMatrixFactorization
 
 
 def test_server_groups_and_forward_shape():

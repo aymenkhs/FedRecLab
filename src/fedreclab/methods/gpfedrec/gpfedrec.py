@@ -24,7 +24,7 @@ Faithful configuration: ``FullClientSelection`` with ``SimpleAvg``
 (``q_global = mean(R)``, as in the reference). Defaults follow the
 reference ``train.py``: ``latent_dim=32``, ``neighborhood_threshold=1.0``,
 ``mp_layers=1``; client defaults are listed on
-:class:`~src.fedreclab.methods.gpfedrec.gpfedrec_client.GPFedRecClientAlgorithm`.
+:class:`~fedreclab.methods.gpfedrec.gpfedrec_client.GPFedRecClientAlgorithm`.
 
 Exchanged data: ``item_embeddings`` is the only ParamIO group (download
 ``q_global``, upload the full table). ``r_i`` is server-held per-client
@@ -85,9 +85,9 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
 
 NEIGHBOR_RULES = ("similarity", "reference_distance")
 

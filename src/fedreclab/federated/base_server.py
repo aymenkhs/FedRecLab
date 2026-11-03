@@ -6,18 +6,18 @@ import logging
 import torch
 import numpy as np
 
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.evaluator import Evaluator
-from src.fedreclab.federated.base_client import (
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.evaluator import Evaluator
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.client_selection import BaseClientSelection
-from src.fedreclab.federated.aggregation import BaseAggregation
-from src.fedreclab.federated._compatibility_warnings import iter_selector_aggregator_warnings
-from src.fedreclab.federated.utils import RoundStatistics, ParamIO, is_row_update
+from fedreclab.federated.client_selection import BaseClientSelection
+from fedreclab.federated.aggregation import BaseAggregation
+from fedreclab.federated._compatibility_warnings import iter_selector_aggregator_warnings
+from fedreclab.federated.utils import RoundStatistics, ParamIO, is_row_update
 
 logger = logging.getLogger(__name__)
 

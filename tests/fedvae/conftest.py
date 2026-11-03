@@ -4,13 +4,13 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
-from src.fedreclab.methods.fedvae.fedvae import default_param_ios
-from src.fedreclab.methods.fedvae.fedvae_client import FedVAEClientAlgorithm
-from src.fedreclab.methods.fedvae.fedvae_model import MultVAE
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from fedreclab.methods.fedvae.fedvae import default_param_ios
+from fedreclab.methods.fedvae.fedvae_client import FedVAEClientAlgorithm
+from fedreclab.methods.fedvae.fedvae_model import MultVAE
 
 HIDDEN = (4,)
 LATENT = 2

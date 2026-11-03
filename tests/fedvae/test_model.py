@@ -2,7 +2,7 @@
 
 import torch
 
-from src.fedreclab.methods.fedvae.fedvae_model import MultVAE
+from fedreclab.methods.fedvae.fedvae_model import MultVAE
 
 
 def test_layer_shapes_match_hidden_and_latent():

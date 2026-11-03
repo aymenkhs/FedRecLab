@@ -35,9 +35,9 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.efvae.efvae_sampler import FIMSUniSampler
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.efvae.efvae_sampler import FIMSUniSampler
 
 ROW_GROUPS = ("enc_embeddings", "dec_embeddings", "dec_bias")
 DENSE_GROUPS = ("middle",)

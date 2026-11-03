@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.client_partitioning import (
+from fedreclab.data.client_partitioning import (
     DirichletUserPartitionStrategy,
     RandomUserPartitionStrategy,
     _build_client_partition,

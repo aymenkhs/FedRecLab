@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-from src.fedreclab.federated.base_client import BaseClientAlgorithm
-from src.fedreclab.federated.mechanisms import ClipLaplaceLDP
-from src.fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
+from fedreclab.federated.base_client import BaseClientAlgorithm
+from fedreclab.federated.mechanisms import ClipLaplaceLDP
+from fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
 
 
 def _l1(parts):

@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from src.fedreclab.data.split import BaseSplitStrategy
-from src.fedreclab.data.client_partitioning import BaseClientPartitionStrategy
+from fedreclab.data.split import BaseSplitStrategy
+from fedreclab.data.client_partitioning import BaseClientPartitionStrategy
 
 
 class InteractionDataset:

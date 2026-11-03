@@ -14,9 +14,9 @@ from cornac.datasets import (
     citeulike,
 )
 
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import BaseSplitStrategy
-from src.fedreclab.data.client_partitioning import BaseClientPartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import BaseSplitStrategy
+from fedreclab.data.client_partitioning import BaseClientPartitionStrategy
 
 
 CORNAC_DATASETS = {

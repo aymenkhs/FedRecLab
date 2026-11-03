@@ -29,14 +29,14 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import assert_skeleton_server_coverage
-from src.fedreclab.methods.metamf.metamf_model import (
+from fedreclab.federated.utils import assert_skeleton_server_coverage
+from fedreclab.methods.metamf.metamf_model import (
     FACTOR_PHI_KEYS,
     FULL_PHI_KEYS,
     ITEM_PAYLOADS,

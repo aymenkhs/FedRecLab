@@ -16,8 +16,8 @@ None
 
 Examples
 --------
->>> from src.fedreclab.federated.aggregation import FedAvg, SimpleAvg
->>> from src.fedreclab.federated.client_selection import RandomClientSelection
+>>> from fedreclab.federated.aggregation import FedAvg, SimpleAvg
+>>> from fedreclab.federated.client_selection import RandomClientSelection
 >>> sel = RandomClientSelection(4, 2, weights={0: 1, 1: 2, 2: 3, 3: 4})
 >>> list(iter_selector_aggregator_warnings(sel, [FedAvg(4)])) != []
 True
@@ -27,8 +27,8 @@ True
 
 from collections.abc import Callable, Iterable, Iterator
 
-from src.fedreclab.federated.aggregation import FedAvg
-from src.fedreclab.federated.client_selection import (
+from fedreclab.federated.aggregation import FedAvg
+from fedreclab.federated.client_selection import (
     PowerOfChoiceClientSelection,
     RandomClientSelection,
     RoundRobinClientSelection,
@@ -91,8 +91,8 @@ def iter_selector_aggregator_warnings(
 
     Examples
     --------
-    >>> from src.fedreclab.federated.aggregation import FedAvg
-    >>> from src.fedreclab.federated.client_selection import RoundRobinClientSelection
+    >>> from fedreclab.federated.aggregation import FedAvg
+    >>> from fedreclab.federated.client_selection import RoundRobinClientSelection
     >>> sel = RoundRobinClientSelection(4, 2, seed=0)
     >>> next(iter_selector_aggregator_warnings(sel, [FedAvg(4)]))
     'RoundRobinClientSelection visits clients equally often; FedAvg then weights their updates by num_training_examples. Both source analyses (CyCP, RR-CLI) use a plain mean. Use SimpleAvg for the faithful configuration.'

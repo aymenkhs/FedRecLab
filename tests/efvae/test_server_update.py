@@ -5,10 +5,10 @@ import copy
 import numpy as np
 import torch
 
-from src.fedreclab.federated.aggregation import SimpleAvg
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.methods.efvae.efvae import EFVAE
-from src.fedreclab.methods.efvae.efvae_client import EFVAEClientAlgorithm
+from fedreclab.federated.aggregation import SimpleAvg
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.methods.efvae.efvae import EFVAE
+from fedreclab.methods.efvae.efvae_client import EFVAEClientAlgorithm
 from tests.efvae.conftest import HIDDEN, LATENT, NUM_CLUSTER, NUM_SAMPLE
 
 

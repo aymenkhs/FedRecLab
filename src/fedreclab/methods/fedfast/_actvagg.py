@@ -18,7 +18,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from src.fedreclab.federated.aggregation import ChangeMagnitudeAvg, FedAvg
+from fedreclab.federated.aggregation import ChangeMagnitudeAvg, FedAvg
 
 
 @dataclass

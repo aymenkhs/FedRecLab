@@ -4,8 +4,8 @@ import random
 
 import numpy as np
 
-from src.fedreclab.federated.client_selection import RandomClientSelection
-from src.fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
+from fedreclab.federated.client_selection import RandomClientSelection
+from fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
 
 
 def test_unseeded_selection_returns_the_asked_number_of_clients():

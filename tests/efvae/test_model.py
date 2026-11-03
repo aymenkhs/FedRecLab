@@ -2,13 +2,13 @@
 
 import torch
 
-from src.fedreclab.methods.efvae.efvae_fcis import EFVAEFCISServer
-from src.fedreclab.methods.efvae.efvae import EFVAE
-from src.fedreclab.methods.efvae.efvae_client import (
+from fedreclab.methods.efvae.efvae_fcis import EFVAEFCISServer
+from fedreclab.methods.efvae.efvae import EFVAE
+from fedreclab.methods.efvae.efvae_client import (
     EFVAEClientAlgorithm,
     EFVAEFCISClientAlgorithm,
 )
-from src.fedreclab.methods.efvae.efvae_model import EFMultVAE
+from fedreclab.methods.efvae.efvae_model import EFMultVAE
 
 
 def test_forward_shapes():

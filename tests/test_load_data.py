@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.load_data import CORNAC_DATASETS_VARIANTS, load_cornac_dataset
-from src.fedreclab.data.split import RatioSplitStrategy
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.load_data import CORNAC_DATASETS_VARIANTS, load_cornac_dataset
+from fedreclab.data.split import RatioSplitStrategy
 
 # Stub row counts, distinct so a missing variant (Cornac default "100K") fails.
 VARIANT_SIZES = {
@@ -42,7 +42,7 @@ def test_variants_map_covers_all_movielens_names():
 )
 def test_load_cornac_dataset_uses_variant_sizes(dataset_name, expected_variant):
     with patch(
-        "src.fedreclab.data.load_data.movielens.load_feedback",
+        "fedreclab.data.load_data.movielens.load_feedback",
         side_effect=_stub_feedback,
     ) as mock_load:
         dataset = load_cornac_dataset(

@@ -6,14 +6,14 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.aggregation import Krum, Median, SimpleAvg
-from src.fedreclab.federated.client_selection import (
+from fedreclab.federated.aggregation import Krum, Median, SimpleAvg
+from fedreclab.federated.client_selection import (
     FullClientSelection,
     RandomClientSelection,
 )
-from src.fedreclab.methods.fedvae.fedvae import FedVAE, default_param_ios
-from src.fedreclab.methods.fedvae.fedvae_client import FedVAEClientAlgorithm
-from src.fedreclab.methods.fedvae.fedvae_model import MultVAE
+from fedreclab.methods.fedvae.fedvae import FedVAE, default_param_ios
+from fedreclab.methods.fedvae.fedvae_client import FedVAEClientAlgorithm
+from fedreclab.methods.fedvae.fedvae_model import MultVAE
 
 HIDDEN = (4,)
 LATENT = 2

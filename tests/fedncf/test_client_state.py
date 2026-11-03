@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.base_client import ClientTrainingRequest
-from src.fedreclab.federated.utils import (
+from fedreclab.federated.base_client import ClientTrainingRequest
+from fedreclab.federated.utils import (
     assert_skeleton_server_coverage,
     restore_named_optimizer_state,
 )
-from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
+from fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
 
 
 def test_local_train_runs_without_a_seed(fedncf_client_and_request):

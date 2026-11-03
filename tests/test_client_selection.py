@@ -7,21 +7,21 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.aggregation import FedAvg, SimpleAvg
-from src.fedreclab.federated.base_client import BaseClientAlgorithm
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.client_selection import (
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.aggregation import FedAvg, SimpleAvg
+from fedreclab.federated.base_client import BaseClientAlgorithm
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.client_selection import (
     ActvSampClientSelection,
     FullClientSelection,
     PowerOfChoiceClientSelection,
     RandomClientSelection,
     RoundRobinClientSelection,
 )
-from src.fedreclab.federated._compatibility_warnings import iter_selector_aggregator_warnings
-from src.fedreclab.federated.utils import ParamIO, RoundStatistics
+from fedreclab.federated._compatibility_warnings import iter_selector_aggregator_warnings
+from fedreclab.federated.utils import ParamIO, RoundStatistics
 
 
 def _round_stats(selected, losses=None):
@@ -271,7 +271,7 @@ def test_power_of_choice_d_schedule_is_clamped(caplog):
     def too_large(_round):
         return 99
 
-    caplog.set_level(logging.INFO, logger="src.fedreclab.federated.client_selection")
+    caplog.set_level(logging.INFO, logger="fedreclab.federated.client_selection")
     small = PowerOfChoiceClientSelection(5, 2, d=3, seed=0, d_schedule=too_small)
     small.select(0)
     assert "of 2 candidates" in caplog.text

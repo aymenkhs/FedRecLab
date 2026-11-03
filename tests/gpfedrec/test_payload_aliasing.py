@@ -7,7 +7,7 @@ memory with the payload. On a CUDA device the copy would hide the bug.
 import numpy as np
 import torch
 
-from src.fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
+from fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
 
 NUM_ITEMS = 8
 LATENT = 4

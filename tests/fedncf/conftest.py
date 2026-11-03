@@ -4,9 +4,9 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
-from src.fedreclab.methods.fedncf.fedncf import default_param_ios
-from src.fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from fedreclab.methods.fedncf.fedncf import default_param_ios
+from fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
 
 
 def _clone_groups(groups):

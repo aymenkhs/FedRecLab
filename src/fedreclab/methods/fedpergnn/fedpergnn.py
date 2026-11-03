@@ -3,9 +3,9 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import pandas as pd
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 # Set on the client. The server copies the three widths; the flag is
 # client-only because only local Adam consults it.

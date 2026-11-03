@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from src.fedreclab.federated.mechanisms import ClipLaplaceLDP, PseudoItemSampling
+from fedreclab.federated.mechanisms import ClipLaplaceLDP, PseudoItemSampling
 
 
 def test_pseudo_ids_avoid_the_exclusion_set_and_are_reproducible():

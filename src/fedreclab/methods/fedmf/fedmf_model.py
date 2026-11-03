@@ -10,7 +10,7 @@ are passed into ``forward``; they are not parameters of this module.
 import torch
 from torch import nn
 
-from src.fedreclab.federated.utils import flatten_grouped_state
+from fedreclab.federated.utils import flatten_grouped_state
 
 _INIT_MODES = ("constant", "normal")
 

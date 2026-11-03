@@ -22,20 +22,20 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import assert_skeleton_server_coverage, flatten_grouped_state
-from src.fedreclab.methods.efvae.efvae_fcis import (
+from fedreclab.federated.utils import assert_skeleton_server_coverage, flatten_grouped_state
+from fedreclab.methods.efvae.efvae_fcis import (
     build_hybrid_items,
     sampled_softmax_ce,
     sparse_row_upload_named,
 )
-from src.fedreclab.methods.efvae.efvae_model import EFMultVAE
-from src.fedreclab.methods.efvae.efvae_sampler import FIMSUniSampler
+from fedreclab.methods.efvae.efvae_model import EFMultVAE
+from fedreclab.methods.efvae.efvae_sampler import FIMSUniSampler
 
 
 class EFVAEFCISClientAlgorithm(BaseClientAlgorithm):

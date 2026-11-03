@@ -5,8 +5,8 @@ import pytest
 import torch
 from torch import nn
 
-from src.fedreclab.federated.aggregation import FedAvg, Median
-from src.fedreclab.methods.metamf.metamf_model import (
+from fedreclab.federated.aggregation import FedAvg, Median
+from fedreclab.methods.metamf.metamf_model import (
     MetaRecommender,
     predict_ratings,
     unbatch_phi,

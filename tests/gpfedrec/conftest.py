@@ -4,15 +4,15 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.aggregation import SimpleAvg
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.methods.gpfedrec.gpfedrec import GPFedRec, default_param_ios
-from src.fedreclab.methods.gpfedrec.gpfedrec_client import GPFedRecClientAlgorithm
-from src.fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.aggregation import SimpleAvg
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.methods.gpfedrec.gpfedrec import GPFedRec, default_param_ios
+from fedreclab.methods.gpfedrec.gpfedrec_client import GPFedRecClientAlgorithm
+from fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
 
 LATENT = 4
 HIDDEN = (8, 4)

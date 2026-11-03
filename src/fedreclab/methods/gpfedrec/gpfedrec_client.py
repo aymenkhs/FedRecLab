@@ -35,13 +35,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.methods.gpfedrec.gpfedrec_model import (
+from fedreclab.methods.gpfedrec.gpfedrec_model import (
     GPFedRecScoreFunction,
     build_client_template,
     predict_logits,

@@ -43,20 +43,20 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import (
+from fedreclab.federated.utils import (
     assert_client_names_disjoint,
     assert_skeleton_server_coverage,
     extract_named_optimizer_state,
     flatten_grouped_state,
     restore_named_optimizer_state,
 )
-from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
+from fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
 
 logger = logging.getLogger(__name__)
 

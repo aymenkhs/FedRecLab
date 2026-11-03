@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from src.fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
+from fedreclab.methods.semidfegl.semidfegl_client import SemiDFEGLClientAlgorithm
 
 
 def test_privacy_off_upload_is_exactly_loss_updated_rows(make_server):
@@ -143,7 +143,7 @@ def test_privacy_pseudo_matches_single_positive_and_replaces_row(make_server):
     # Train client 0; apply privacy afterwards.
     request_payload = server._build_server_payload(0)
     # Build a real training request through the server path, then privacy.
-    from src.fedreclab.federated.base_client import ClientTrainingRequest
+    from fedreclab.federated.base_client import ClientTrainingRequest
 
     client_state = server.client_states[0]
     training_data = server.interaction_dataset.get_client_view(
@@ -228,9 +228,9 @@ def test_compute_scores_is_ego_dot_product(make_server):
 def test_validation_edge_is_not_a_graph_edge(make_server, make_tiny_dataset):
     import pandas as pd
 
-    from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-    from src.fedreclab.data.dataset import InteractionDataset
-    from src.fedreclab.data.split import RatioSplitStrategy
+    from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+    from fedreclab.data.dataset import InteractionDataset
+    from fedreclab.data.split import RatioSplitStrategy
 
     rows = []
     for user_id in range(3):

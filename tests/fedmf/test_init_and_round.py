@@ -5,14 +5,14 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.aggregation import Sum
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.methods.fedmf.fedmf import FedMF
-from src.fedreclab.methods.fedmf.fedmf_client import FedMFClientAlgorithm
-from src.fedreclab.methods.fedmf.fedmf_model import MatrixFactorization
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.aggregation import Sum
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.methods.fedmf.fedmf import FedMF
+from fedreclab.methods.fedmf.fedmf_client import FedMFClientAlgorithm
+from fedreclab.methods.fedmf.fedmf_model import MatrixFactorization
 
 
 def _tiny_dataset():

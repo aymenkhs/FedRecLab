@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from src.fedreclab.methods.fedpergnn.fedpergnn import FedPerGNN
+from fedreclab.methods.fedpergnn.fedpergnn import FedPerGNN
 
 
 def _server(expansion_seed, seed):

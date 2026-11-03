@@ -5,8 +5,8 @@ import math
 import numpy as np
 import torch
 
-from src.fedreclab.federated.aggregation import FedAtt
-from src.fedreclab.federated.utils import ParamIO, RoundStatistics
+from fedreclab.federated.aggregation import FedAtt
+from fedreclab.federated.utils import ParamIO, RoundStatistics
 
 
 def _info(selected=(0, 1)):

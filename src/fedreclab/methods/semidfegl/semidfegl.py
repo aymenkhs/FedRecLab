@@ -48,10 +48,10 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.semidfegl.semidfegl_model import (
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.semidfegl.semidfegl_model import (
     fuzzy_cmeans,
     xavier_uniform_table,
 )

@@ -14,7 +14,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from src.fedreclab.federated.utils import flatten_grouped_state
+from fedreclab.federated.utils import flatten_grouped_state
 
 
 class GeneralMatrixFactorization(nn.Module):

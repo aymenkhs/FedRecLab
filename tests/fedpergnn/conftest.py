@@ -5,9 +5,9 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
-from src.fedreclab.methods.fedpergnn.fedpergnn import default_param_ios
-from src.fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from fedreclab.methods.fedpergnn.fedpergnn import default_param_ios
+from fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
 
 
 def _expansion(hidden, hist, neigh):

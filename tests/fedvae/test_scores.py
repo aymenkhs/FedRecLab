@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.fedreclab.federated.base_client import ClientStateBase
-from src.fedreclab.methods.fedvae.fedvae_model import MultVAE
+from fedreclab.federated.base_client import ClientStateBase
+from fedreclab.methods.fedvae.fedvae_model import MultVAE
 
 
 def test_scores_align_with_candidates_and_use_train_items(

@@ -41,8 +41,8 @@ from __future__ import annotations
 
 import torch
 
-from src.fedreclab.methods.efvae.efvae_fcis import EFVAEFCISServer
-from src.fedreclab.methods.efvae.efvae_model import EFMultVAE
+from fedreclab.methods.efvae.efvae_fcis import EFVAEFCISServer
+from fedreclab.methods.efvae.efvae_model import EFMultVAE
 
 
 class EFVAE(EFVAEFCISServer):

@@ -4,7 +4,7 @@ import logging
 
 import numpy as np
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.base_server import BaseFederatedServer
 
 
 def _server(num_clients=4, current_round=0):
@@ -30,7 +30,7 @@ def test_record_participation_accumulates_across_rounds():
 
 def test_record_participation_logs_summary_at_info_and_ids_at_debug(caplog):
     server = _server()
-    caplog.set_level(logging.DEBUG, logger="src.fedreclab.federated.base_server")
+    caplog.set_level(logging.DEBUG, logger="fedreclab.federated.base_server")
     server._record_participation([0, 2])
     info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
@@ -43,7 +43,7 @@ def test_record_participation_logs_summary_at_info_and_ids_at_debug(caplog):
 
 def test_record_participation_empty_selection_leaves_counts_unchanged(caplog):
     server = _server()
-    caplog.set_level(logging.INFO, logger="src.fedreclab.federated.base_server")
+    caplog.set_level(logging.INFO, logger="fedreclab.federated.base_server")
     server._record_participation([])
     np.testing.assert_array_equal(server.participation_counts, [0, 0, 0, 0])
     assert (

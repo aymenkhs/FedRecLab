@@ -3,13 +3,13 @@
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.aggregation import SimpleAvg
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.methods.fedpergnn.fedpergnn import FedPerGNN
-from src.fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.aggregation import SimpleAvg
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.methods.fedpergnn.fedpergnn import FedPerGNN
+from fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
 
 NUM_ITEMS = 6
 

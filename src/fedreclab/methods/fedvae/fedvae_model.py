@@ -25,7 +25,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from src.fedreclab.federated.utils import flatten_grouped_state
+from fedreclab.federated.utils import flatten_grouped_state
 
 
 def _xavier_uniform_(tensor: torch.Tensor, generator: torch.Generator | None) -> None:

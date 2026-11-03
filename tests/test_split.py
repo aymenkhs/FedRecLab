@@ -1,4 +1,4 @@
-from src.fedreclab.data.split import LeaveNOutSplitStrategy, RatioSplitStrategy
+from fedreclab.data.split import LeaveNOutSplitStrategy, RatioSplitStrategy
 import numpy as np
 import pandas as pd
 import pytest

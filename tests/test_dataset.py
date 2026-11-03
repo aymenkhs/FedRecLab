@@ -4,10 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.load_data import load_dataframe_dataset
-from src.fedreclab.data.split import RatioSplitStrategy
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.load_data import load_dataframe_dataset
+from fedreclab.data.split import RatioSplitStrategy
 
 
 def _rating_filter_frame():

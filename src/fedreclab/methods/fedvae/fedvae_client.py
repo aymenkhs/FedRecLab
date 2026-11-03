@@ -24,14 +24,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import assert_skeleton_server_coverage
-from src.fedreclab.methods.fedvae.fedvae_model import MultVAE
+from fedreclab.federated.utils import assert_skeleton_server_coverage
+from fedreclab.methods.fedvae.fedvae_model import MultVAE
 
 
 class FedVAEClientAlgorithm(BaseClientAlgorithm):

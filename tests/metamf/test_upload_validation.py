@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
-from src.fedreclab.federated.utils import UpdatePackage
-from src.fedreclab.methods.metamf.metamf import default_param_ios
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
+from fedreclab.federated.utils import UpdatePackage
+from fedreclab.methods.metamf.metamf import default_param_ios
 from tests.metamf.conftest import make_server, tiny_dataset
 
 

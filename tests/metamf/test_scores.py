@@ -3,7 +3,7 @@
 import numpy as np
 import torch
 
-from src.fedreclab.methods.metamf.metamf_model import predict_ratings, unbatch_phi
+from fedreclab.methods.metamf.metamf_model import predict_ratings, unbatch_phi
 from tests.metamf.conftest import make_server, tiny_dataset
 
 

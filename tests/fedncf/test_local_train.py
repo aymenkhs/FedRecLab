@@ -10,8 +10,8 @@ import pytest
 import torch
 from torch import nn
 
-from src.fedreclab.federated.base_client import ClientTrainingRequest
-from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
+from fedreclab.federated.base_client import ClientTrainingRequest
+from fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
 
 
 class _ModuleWithUserTables(nn.Module):

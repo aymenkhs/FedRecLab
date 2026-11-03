@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from src.fedreclab.methods.gpfedrec.gpfedrec import (
+from fedreclab.methods.gpfedrec.gpfedrec import (
     build_relation_graph,
     cosine_similarity_matrix,
     propagate_tables,

@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.metric import (
+from fedreclab.data.metric import (
     BiasMetrics,
     CategoryMatrix,
     beyond_parity_metrics,

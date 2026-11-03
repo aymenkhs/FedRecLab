@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
+from fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
 def _install_neighbours(request, embeddings, user_ids):

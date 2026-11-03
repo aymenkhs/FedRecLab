@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 import torch
 
-from src.fedreclab.federated.utils import RoundStatistics, ParamIO
+from fedreclab.federated.utils import RoundStatistics, ParamIO
 
 
 def _iter_client_updates(updates: Any) -> list[Any]:

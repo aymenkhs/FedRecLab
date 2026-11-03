@@ -51,9 +51,9 @@ Deviations from the paper and the reference code:
 
 import torch
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.fedmf.fedmf_model import MatrixFactorization
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.fedmf.fedmf_model import MatrixFactorization
 
 _INIT_MODES = ("constant", "normal")
 

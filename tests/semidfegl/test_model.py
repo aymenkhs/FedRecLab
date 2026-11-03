@@ -3,7 +3,7 @@
 import numpy as np
 import torch
 
-from src.fedreclab.methods.semidfegl.semidfegl_model import (
+from fedreclab.methods.semidfegl.semidfegl_model import (
     fuzzy_cmeans,
     lightgcn_layer_combine,
     propagate_semidfegl,

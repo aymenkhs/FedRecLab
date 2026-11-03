@@ -3,10 +3,10 @@
 import numpy as np
 import pytest
 
-from src.fedreclab.federated.aggregation import FedAvg, Krum, Median, SimpleAvg
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO, RoundStatistics, UpdatePackage
+from fedreclab.federated.aggregation import FedAvg, Krum, Median, SimpleAvg
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO, RoundStatistics, UpdatePackage
 
 
 def _round_info(selected, examples=None):

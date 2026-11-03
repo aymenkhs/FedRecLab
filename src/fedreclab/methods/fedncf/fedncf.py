@@ -43,9 +43,9 @@ Deviations from the paper:
   ``fedncf_model`` (module docstring).
 """
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.fedncf.fedncf_model import NeuralCollaborativeFiltering
 
 
 def default_param_ios() -> dict[str, ParamIO]:

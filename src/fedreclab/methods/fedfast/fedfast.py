@@ -37,16 +37,16 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.fedreclab.federated.aggregation import BaseAggregation
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.client_selection import ActvSampClientSelection
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.fedfast._actvagg import (
+from fedreclab.federated.aggregation import BaseAggregation
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.client_selection import ActvSampClientSelection
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.fedfast._actvagg import (
     _ActvAgg,
     _FedFastClusterState,
     _kmeans_labels,
 )
-from src.fedreclab.methods.fedfast.fedfast_model import GeneralMatrixFactorization
+from fedreclab.methods.fedfast.fedfast_model import GeneralMatrixFactorization
 
 logger = logging.getLogger(__name__)
 

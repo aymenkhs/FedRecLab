@@ -2,14 +2,14 @@
 
 import pandas as pd
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.aggregation import SimpleAvg
-from src.fedreclab.federated.base_client import BaseClientAlgorithm
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.federated.utils import ParamIO
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.aggregation import SimpleAvg
+from fedreclab.federated.base_client import BaseClientAlgorithm
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.federated.utils import ParamIO
 
 
 def _tiny_dataset():

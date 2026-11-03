@@ -5,9 +5,9 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
-from src.fedreclab.methods.fedmf.fedmf import default_param_ios
-from src.fedreclab.methods.fedmf.fedmf_client import FedMFClientAlgorithm
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from fedreclab.methods.fedmf.fedmf import default_param_ios
+from fedreclab.methods.fedmf.fedmf_client import FedMFClientAlgorithm
 
 
 def _payload(num_items, latent_dim, fill=0.01):

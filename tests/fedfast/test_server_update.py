@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.aggregation import ChangeMagnitudeAvg, FedAvg, SimpleAvg
-from src.fedreclab.federated.client_selection import ActvSampClientSelection
-from src.fedreclab.methods.fedfast.fedfast import FedFast
-from src.fedreclab.methods.fedfast.fedfast_client import FedFastClientAlgorithm
+from fedreclab.federated.aggregation import ChangeMagnitudeAvg, FedAvg, SimpleAvg
+from fedreclab.federated.client_selection import ActvSampClientSelection
+from fedreclab.methods.fedfast.fedfast import FedFast
+from fedreclab.methods.fedfast.fedfast_client import FedFastClientAlgorithm
 from tests.fedfast.conftest import make_fedfast_dataset, make_fedfast_server
 
 

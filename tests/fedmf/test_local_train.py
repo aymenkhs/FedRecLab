@@ -5,9 +5,9 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.fedmf.fedmf import default_param_ios
-from src.fedreclab.methods.fedmf.fedmf_client import FedMFClientAlgorithm
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.fedmf.fedmf import default_param_ios
+from fedreclab.methods.fedmf.fedmf_client import FedMFClientAlgorithm
 
 
 def _github_user_update(u, ratings, item_vector, lr, reg_u, reg_v):

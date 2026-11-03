@@ -16,17 +16,17 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.utils import (
+from fedreclab.federated.utils import (
     assert_skeleton_server_coverage,
     flatten_grouped_state,
 )
-from src.fedreclab.methods.fedmf.fedmf_model import MatrixFactorization
+from fedreclab.methods.fedmf.fedmf_model import MatrixFactorization
 
 _LOCAL_UPDATES = ("sgd_sequential", "full_gradient")
 _U_REGS = ("per_rating", "once")

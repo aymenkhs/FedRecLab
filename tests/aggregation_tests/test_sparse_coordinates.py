@@ -7,8 +7,8 @@ coordinates that are non-zero in only a few client updates.
 
 import numpy as np
 
-from src.fedreclab.federated.aggregation import Bulyan, Krum, Median, TrimmedMean
-from src.fedreclab.federated.utils import ParamIO, RoundStatistics
+from fedreclab.federated.aggregation import Bulyan, Krum, Median, TrimmedMean
+from fedreclab.federated.utils import ParamIO, RoundStatistics
 
 
 def _info(n):

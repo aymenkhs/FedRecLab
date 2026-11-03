@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.aggregation import BaseAggregation, Sum
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO, RoundStatistics, UpdatePackage
+from fedreclab.federated.aggregation import BaseAggregation, Sum
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO, RoundStatistics, UpdatePackage
 
 
 class RecordingAggregator(BaseAggregation):

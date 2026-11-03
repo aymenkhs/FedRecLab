@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from src.fedreclab.methods.fedfast._actvagg import _ActvAgg, _FedFastClusterState
+from fedreclab.methods.fedfast._actvagg import _ActvAgg, _FedFastClusterState
 
 
 def test_subordinate_receives_discounted_delegate_delta():

@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.aggregation import SimpleAvg
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.methods.metamf.metamf import MetaMF
-from src.fedreclab.methods.metamf.metamf_client import MetaMFClientAlgorithm
+from fedreclab.federated.aggregation import SimpleAvg
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.methods.metamf.metamf import MetaMF
+from fedreclab.methods.metamf.metamf_client import MetaMFClientAlgorithm
 from tests.metamf.conftest import TINY, make_server, tiny_dataset
 
 

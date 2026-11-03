@@ -3,11 +3,11 @@
 import numpy as np
 import pandas as pd
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.evaluator import FullRankingEvaluator
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.base_client import BaseClientAlgorithm, ClientStateBase
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.evaluator import FullRankingEvaluator
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.base_client import BaseClientAlgorithm, ClientStateBase
 
 
 class _StubScorer(BaseClientAlgorithm):

@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 
-from src.fedreclab.federated.utils import RoundStatistics
+from fedreclab.federated.utils import RoundStatistics
 
 logger = logging.getLogger(__name__)
 

@@ -49,20 +49,20 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.mechanisms import ClipLaplaceLDP, PseudoItemSampling
-from src.fedreclab.federated.utils import (
+from fedreclab.federated.mechanisms import ClipLaplaceLDP, PseudoItemSampling
+from fedreclab.federated.utils import (
     assert_client_names_disjoint,
     assert_skeleton_server_coverage,
     extract_named_optimizer_state,
     restore_named_optimizer_state,
 )
-from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
+from fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 logger = logging.getLogger(__name__)
 
@@ -590,9 +590,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         --------
         >>> import numpy as np
         >>> import pandas as pd
-        >>> from src.fedreclab.federated.base_client import (
+        >>> from fedreclab.federated.base_client import (
         ...     ClientStateBase, ClientTrainingRequest, ClientTrainingResponse)
-        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> from fedreclab.federated.utils import ParamIO, UpdatePackage
         >>> client = FedPerGNNClientAlgorithm(num_pseudo_items=1)
         >>> table = np.zeros((3, 1), dtype=np.float32)
         >>> state = ClientStateBase(0, {})
@@ -735,9 +735,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         --------
         >>> import numpy as np
         >>> import pandas as pd
-        >>> from src.fedreclab.federated.base_client import (
+        >>> from fedreclab.federated.base_client import (
         ...     ClientStateBase, ClientTrainingRequest, ClientTrainingResponse)
-        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> from fedreclab.federated.utils import ParamIO, UpdatePackage
         >>> state = ClientStateBase(
         ...     0, {"user_embedding.weight": np.array([[1.0, 0.0]], dtype=np.float32)})
         >>> req = ClientTrainingRequest(
@@ -815,9 +815,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         --------
         >>> import numpy as np
         >>> import pandas as pd
-        >>> from src.fedreclab.federated.base_client import (
+        >>> from fedreclab.federated.base_client import (
         ...     ClientStateBase, ClientTrainingRequest, ClientTrainingResponse)
-        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> from fedreclab.federated.utils import ParamIO, UpdatePackage
         >>> state = ClientStateBase(0, {})
         >>> req = ClientTrainingRequest(
         ...     client_id=0, current_round=0, users_in_client=[0],
@@ -880,9 +880,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         Examples
         --------
         >>> import numpy as np
-        >>> from src.fedreclab.federated.base_client import (
+        >>> from fedreclab.federated.base_client import (
         ...     ClientStateBase, ClientTrainingResponse)
-        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> from fedreclab.federated.utils import ParamIO, UpdatePackage
         >>> resp = ClientTrainingResponse(
         ...     client_id=0,
         ...     updated_client_state=ClientStateBase(0, {}),
@@ -928,9 +928,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         Examples
         --------
         >>> import numpy as np
-        >>> from src.fedreclab.federated.base_client import (
+        >>> from fedreclab.federated.base_client import (
         ...     ClientStateBase, ClientTrainingResponse)
-        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> from fedreclab.federated.utils import ParamIO, UpdatePackage
         >>> resp = ClientTrainingResponse(
         ...     client_id=0,
         ...     updated_client_state=ClientStateBase(0, {}),

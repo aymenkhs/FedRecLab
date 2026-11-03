@@ -4,8 +4,8 @@ The module is server-only: item table, GAT layers, and the history-with-
 neighbours projection. The owner's user embedding is not on the module.
 """
 
-from src.fedreclab.federated.utils import assert_skeleton_server_coverage
-from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
+from fedreclab.federated.utils import assert_skeleton_server_coverage
+from fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
 def test_history_with_neighbors_is_in_the_server_state():

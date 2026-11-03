@@ -4,12 +4,12 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.aggregation import BaseAggregation, FedAtt, SimpleAvg
-from src.fedreclab.federated.client_selection import (
+from fedreclab.federated.aggregation import BaseAggregation, FedAtt, SimpleAvg
+from fedreclab.federated.client_selection import (
     BaseClientSelection,
     RandomClientSelection,
 )
-from src.fedreclab.methods.gpfedrec.gpfedrec import (
+from fedreclab.methods.gpfedrec.gpfedrec import (
     GPFedRec,
     build_relation_graph,
     cosine_similarity_matrix,

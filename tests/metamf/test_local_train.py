@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.methods.metamf.metamf_model import apply_rating_mlp
+from fedreclab.methods.metamf.metamf_model import apply_rating_mlp
 
 
 def _autograd_dphi(payload_u, items, ratings, item_payload):

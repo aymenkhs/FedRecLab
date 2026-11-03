@@ -93,9 +93,9 @@ from typing import Any
 
 import torch
 
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.fedvae.fedvae_model import MultVAE
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.fedvae.fedvae_model import MultVAE
 
 _EXTRAPOLATE = ("all", "weights")
 

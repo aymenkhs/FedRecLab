@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.federated.aggregation import Sum
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO, RoundStatistics, UpdatePackage
+from fedreclab.federated.aggregation import Sum
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingResponse
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO, RoundStatistics, UpdatePackage
 
 
 def _info(selected=(0, 1)):

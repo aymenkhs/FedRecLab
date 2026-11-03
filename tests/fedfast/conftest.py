@@ -4,13 +4,13 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
-from src.fedreclab.federated.client_selection import ActvSampClientSelection
-from src.fedreclab.methods.fedfast.fedfast import FedFast, default_param_ios
-from src.fedreclab.methods.fedfast.fedfast_client import FedFastClientAlgorithm
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from fedreclab.federated.client_selection import ActvSampClientSelection
+from fedreclab.methods.fedfast.fedfast import FedFast, default_param_ios
+from fedreclab.methods.fedfast.fedfast_client import FedFastClientAlgorithm
 
 
 def _clone_groups(groups):

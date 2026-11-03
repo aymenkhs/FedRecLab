@@ -145,10 +145,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.fedreclab.federated.base_client import ClientTrainingResponse
-from src.fedreclab.federated.base_server import BaseFederatedServer
-from src.fedreclab.federated.utils import ParamIO
-from src.fedreclab.methods.metamf.metamf_model import (
+from fedreclab.federated.base_client import ClientTrainingResponse
+from fedreclab.federated.base_server import BaseFederatedServer
+from fedreclab.federated.utils import ParamIO
+from fedreclab.methods.metamf.metamf_model import (
     FACTOR_PHI_KEYS,
     FULL_PHI_KEYS,
     ITEM_PAYLOADS,

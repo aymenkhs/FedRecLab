@@ -15,18 +15,18 @@ import pandas as pd
 import torch
 from torch import nn
 
-from src.fedreclab.federated.base_client import (
+from fedreclab.federated.base_client import (
     BaseClientAlgorithm,
     ClientStateBase,
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
-from src.fedreclab.federated.mechanisms import ClipLaplaceLDP, PseudoItemSampling
-from src.fedreclab.federated.utils import (
+from fedreclab.federated.mechanisms import ClipLaplaceLDP, PseudoItemSampling
+from fedreclab.federated.utils import (
     extract_named_optimizer_state,
     restore_named_optimizer_state,
 )
-from src.fedreclab.methods.semidfegl.semidfegl_model import (
+from fedreclab.methods.semidfegl.semidfegl_model import (
     propagate_semidfegl,
     score_dot,
     xavier_uniform_table,

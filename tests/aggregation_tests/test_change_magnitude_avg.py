@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 
-from src.fedreclab.federated.aggregation import ChangeMagnitudeAvg
-from src.fedreclab.federated.utils import ParamIO, RoundStatistics
+from fedreclab.federated.aggregation import ChangeMagnitudeAvg
+from fedreclab.federated.utils import ParamIO, RoundStatistics
 
 
 def _info(selected=(0, 1)):

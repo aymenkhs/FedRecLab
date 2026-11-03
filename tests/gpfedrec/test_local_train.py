@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.methods.gpfedrec.gpfedrec_client import GPFedRecClientAlgorithm
-from src.fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
+from fedreclab.methods.gpfedrec.gpfedrec_client import GPFedRecClientAlgorithm
+from fedreclab.methods.gpfedrec.gpfedrec_model import initial_item_table
 
 LATENT = 4
 HIDDEN = (8, 4)

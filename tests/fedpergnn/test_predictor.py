@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
+from fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
 def _scores_for_user(model, item_ids, history, user_embedding):

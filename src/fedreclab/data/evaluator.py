@@ -12,8 +12,8 @@ from cornac.metrics import (
     FMeasure,
 )
 
-from src.fedreclab.federated.base_client import ClientStateBase, BaseClientAlgorithm
-from src.fedreclab.data.dataset import InteractionDataset
+from fedreclab.federated.base_client import ClientStateBase, BaseClientAlgorithm
+from fedreclab.data.dataset import InteractionDataset
 
 
 class Evaluator:

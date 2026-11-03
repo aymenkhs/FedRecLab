@@ -2,7 +2,7 @@
 
 import torch
 
-from src.fedreclab.methods.efvae.efvae_sampler import FIMSUniSampler, kmeans
+from fedreclab.methods.efvae.efvae_sampler import FIMSUniSampler, kmeans
 
 
 def test_kmeans_shapes():

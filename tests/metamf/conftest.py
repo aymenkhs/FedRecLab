@@ -4,18 +4,18 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.data.client_partitioning import (
+from fedreclab.data.client_partitioning import (
     ClientPartition,
     CrossDevicePartitionStrategy,
 )
-from src.fedreclab.data.dataset import InteractionDataset
-from src.fedreclab.data.split import RatioSplitStrategy
-from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
-from src.fedreclab.federated.aggregation import FedAvg
-from src.fedreclab.federated.client_selection import FullClientSelection
-from src.fedreclab.methods.metamf.metamf import MetaMF, default_param_ios
-from src.fedreclab.methods.metamf.metamf_client import MetaMFClientAlgorithm
-from src.fedreclab.methods.metamf.metamf_model import MetaRecommender
+from fedreclab.data.dataset import InteractionDataset
+from fedreclab.data.split import RatioSplitStrategy
+from fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
+from fedreclab.federated.aggregation import FedAvg
+from fedreclab.federated.client_selection import FullClientSelection
+from fedreclab.methods.metamf.metamf import MetaMF, default_param_ios
+from fedreclab.methods.metamf.metamf_client import MetaMFClientAlgorithm
+from fedreclab.methods.metamf.metamf_model import MetaRecommender
 
 TINY = dict(
     user_emb_dim=4,

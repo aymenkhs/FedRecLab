@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.fedreclab.methods.fedpergnn.fedpergnn import FedPerGNN
-from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
+from fedreclab.methods.fedpergnn.fedpergnn import FedPerGNN
+from fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
 def test_score_reads_catalogue_item_zero_at_embedding_row_one():

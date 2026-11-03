@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from src.fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
+from fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgorithm
 
 
 def test_defaults_are_rating_mse_and_no_negatives():

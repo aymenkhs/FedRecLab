@@ -28,7 +28,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from src.fedreclab.federated.utils import flatten_grouped_state
+from fedreclab.federated.utils import flatten_grouped_state
 
 ITEM_PAYLOADS = ("factors", "full")
 FACTOR_PHI_KEYS = ("item_left", "item_right", "w1", "b1", "w2", "b2")
