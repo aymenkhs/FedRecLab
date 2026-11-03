@@ -37,6 +37,8 @@ pip install -e ".[dev]"
 
 ## Quick start: FedNCF on MovieLens-100K
 
+The same run, with a short explanation of each step, is in [`examples/quickstart.ipynb`](examples/quickstart.ipynb).
+
 ```python
 from fedreclab.data.load_data import load_cornac_dataset
 from fedreclab.data.split import StratifiedSplitStrategy
@@ -92,12 +94,31 @@ Client algorithms, selectors, aggregators and evaluators are single-use: build n
 
 ## Writing your own method
 
-Subclass `BaseFederatedServer` and `BaseClientAlgorithm`, declare how each parameter group is exchanged with `ParamIO`, and put method-specific logic in the server hooks. See `docs/PROJECT_CONTEXT.md` for the architecture and `AGENTS.md` for conventions.
+Subclass `BaseFederatedServer` and `BaseClientAlgorithm`, declare how each parameter group is exchanged with `ParamIO`, and put method-specific logic in the server hooks. Changing the loss of a method that is already in the library, or keeping some of its layers on the client, is shown for FedNCF in [`examples/extend_fedncf.ipynb`](examples/extend_fedncf.ipynb).
+
+## Examples
+
+- [`examples/quickstart.ipynb`](examples/quickstart.ipynb): FedNCF on MovieLens-100K (load, train, evaluate).
+- [`examples/custom_data.ipynb`](examples/custom_data.ipynb): load a pandas DataFrame or Last.fm 2K as a custom dataset.
+- [`examples/custom_aggregator.ipynb`](examples/custom_aggregator.ipynb): subclass `BaseAggregation` and plug it into FedNCF.
+- [`examples/extend_fedncf.ipynb`](examples/extend_fedncf.ipynb): change FedNCF's loss, or keep layers on the client.
+- [`examples/implement_your_fed_rec.ipynb`](examples/implement_your_fed_rec.ipynb): implement a new method from scratch (popularity baseline).
 
 ## Documentation
 
-- `docs/PROJECT_CONTEXT.md`: architecture, design decisions, roadmap.
-- `docs/issues/`: known issues (core, FedPerGNN, CdFed).
+Component reference (tables, parameters, limitations, custom extension):
+
+- [`docs/methods.md`](docs/methods.md): federated recommendation methods under `src/fedreclab/methods/`.
+- [`docs/client_selection.md`](docs/client_selection.md): client sampling strategies.
+- [`docs/aggregation.md`](docs/aggregation.md): aggregation strategies.
+- [`docs/evaluator.md`](docs/evaluator.md): evaluation protocol and full-ranking evaluator.
+- [`docs/partitioning.md`](docs/partitioning.md): client partition strategies.
+- [`docs/splitting.md`](docs/splitting.md): train / validation / test split strategies.
+- [`docs/metrics.md`](docs/metrics.md): Cornac ranking metrics and bias / fairness metrics.
+- [`docs/datasets.md`](docs/datasets.md): Cornac datasets and custom DataFrame loading.
+
+Also:
+
 - `AGENTS.md`: conventions for contributors and coding agents.
 
 ## Roadmap
