@@ -1,7 +1,6 @@
 """ChangeMagnitudeAvg: L2 change weights for dense and row layouts."""
 
 import numpy as np
-import pytest
 import torch
 
 from src.fedreclab.federated.aggregation import ChangeMagnitudeAvg
@@ -41,11 +40,22 @@ def test_change_eps_drops_unchanged_client():
     np.testing.assert_allclose(out, [3.0, 0.0])
 
 
-def test_raises_when_no_client_exceeds_eps():
-    prev = np.array([1.0])
-    updates = [np.array([1.0]), np.array([1.0])]
-    with pytest.raises(ValueError, match="change_eps"):
-        ChangeMagnitudeAvg(2).aggregate(_info(), prev, updates, _pio())
+def test_unchanged_clients_keep_previous():
+    prev = np.array([1.0, 2.0])
+    updates = [np.array([1.0, 2.0]), np.array([1.0, 2.0])]
+    out = ChangeMagnitudeAvg(2).aggregate(_info(), prev, updates, _pio())
+    np.testing.assert_allclose(out, prev)
+
+
+def test_dict_key_with_no_change_keeps_that_key():
+    prev = {"a": np.array([1.0]), "b": np.array([0.0])}
+    updates = [
+        {"a": np.array([1.0]), "b": np.array([2.0])},
+        {"a": np.array([1.0]), "b": np.array([0.0])},
+    ]
+    out = ChangeMagnitudeAvg(2).aggregate(_info(), prev, updates, _pio())
+    np.testing.assert_allclose(out["a"], [1.0])
+    np.testing.assert_allclose(out["b"], [2.0])
 
 
 def test_dict_keys_weighted_independently():
@@ -57,6 +67,22 @@ def test_dict_keys_weighted_independently():
     out = ChangeMagnitudeAvg(2).aggregate(_info(), prev, updates, _pio())
     np.testing.assert_allclose(out["a"], [2.0])
     np.testing.assert_allclose(out["b"], [1.0])
+
+
+def test_row_unchanged_keeps_previous_and_counts_fallback():
+    prev = np.array([[1.0, 0.0], [0.0, 0.0]])
+    values = np.array(
+        [
+            [[1.0, 0.0], [2.0, 0.0]],
+            [[1.0, 0.0], [0.0, 0.0]],
+        ]
+    )
+    mask = np.array([[True, True], [True, False]])
+    agg = ChangeMagnitudeAvg(2)
+    out = agg.aggregate_rows(_info(), prev, values, mask, _pio())
+    np.testing.assert_allclose(out[0], [1.0, 0.0])
+    np.testing.assert_allclose(out[1], [2.0, 0.0])
+    assert agg.row_fallback_count == 1
 
 
 def test_row_layout_uses_per_column_change_weights():

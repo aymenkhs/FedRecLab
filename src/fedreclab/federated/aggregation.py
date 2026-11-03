@@ -959,9 +959,13 @@ class ChangeMagnitudeAvg(BaseAggregation):
     """Weighted average by L2 change from the previous parameters.
 
     For each client update ``u_i`` and previous value ``prev``, the weight
-    is ``q_i = ||u_i - prev||_2``. Clients with ``q_i <= change_eps`` are
+    is ``q_i = ||u_i - prev||_2``.     Clients with ``q_i <= change_eps`` are
     dropped; the remaining weights are renormalised and used for a
-    weighted mean of the absolute updates (not of the deltas).
+    weighted mean of the absolute updates (not of the deltas). If every
+    client is dropped, the previous value is kept: the weighted mean of
+    an empty set is undefined, and every uploaded value is within
+    ``change_eps`` of that previous value. On the row path each such
+    packed row increments ``row_fallback_count``.
 
     This is the item-embedding rule from FedFast ActvAGG (Muhammad et al.,
     KDD 2020, Algorithm 3 lines 5–12), exposed as a method-agnostic
@@ -983,8 +987,8 @@ class ChangeMagnitudeAvg(BaseAggregation):
     Raises
     ------
     ValueError
-        If ``change_eps`` is negative, no client passes the threshold, a
-        value is non-finite, or shapes do not match ``previous``.
+        If ``change_eps`` is negative, a value is non-finite, or shapes
+        do not match ``previous``.
 
     Examples
     --------
@@ -1020,8 +1024,31 @@ class ChangeMagnitudeAvg(BaseAggregation):
         self,
         previous_parameters: Any,
         per_client: list[Any],
-    ) -> np.ndarray:
-        """Return renormalised change-magnitude weights for one tensor group."""
+    ) -> np.ndarray | None:
+        """Return renormalised change-magnitude weights for one tensor.
+
+        Parameters
+        ----------
+        previous_parameters : array
+            Value before this round.
+        per_client : list of array
+            One update per client. Must not be dicts.
+
+        Returns
+        -------
+        ndarray or None
+            Weights summing to 1 over clients with ``q_i > change_eps``.
+            ``None`` when every client is at or below ``change_eps``; the
+            caller keeps ``previous_parameters``.
+
+        Raises
+        ------
+        TypeError
+            If ``per_client`` holds dicts.
+        ValueError
+            If a difference is non-finite, or the kept weights do not sum
+            to a positive value.
+        """
         if isinstance(per_client[0], dict):
             raise TypeError(
                 "ChangeMagnitudeAvg._weights_for_updates expects non-dict updates"
@@ -1033,10 +1060,7 @@ class ChangeMagnitudeAvg(BaseAggregation):
         )
         keep = qs > self.change_eps
         if not np.any(keep):
-            raise ValueError(
-                "ChangeMagnitudeAvg: no client update exceeds change_eps="
-                f"{self.change_eps}"
-            )
+            return None
         weights = np.where(keep, qs, 0.0)
         w_sum = float(weights.sum())
         if w_sum <= 0:
@@ -1066,13 +1090,14 @@ class ChangeMagnitudeAvg(BaseAggregation):
         Returns
         -------
         array or dict of arrays
-            Weighted mean of contributing updates.
+            Weighted mean of contributing updates. A tensor, or one dict
+            key, whose clients are all at or below ``change_eps`` is
+            returned as the corresponding previous value.
 
         Raises
         ------
         ValueError
-            If there are no updates, no client exceeds ``change_eps``, or
-            a value is non-finite.
+            If there are no updates, or a value is non-finite.
         TypeError
             If updates are a dict but ``previous_parameters`` is not.
         """
@@ -1099,10 +1124,17 @@ class ChangeMagnitudeAvg(BaseAggregation):
                 weights = self._weights_for_updates(
                     previous_parameters[key], key_updates
                 )
-                out[key] = self._weigher._aggregate_with_weights(key_updates, weights)
+                if weights is None:
+                    out[key] = previous_parameters[key]
+                else:
+                    out[key] = self._weigher._aggregate_with_weights(
+                        key_updates, weights
+                    )
             return out
 
         weights = self._weights_for_updates(previous_parameters, per_client)
+        if weights is None:
+            return previous_parameters
         return self._weigher._aggregate_with_weights(per_client, weights)
 
     def aggregate_rows(
@@ -1131,13 +1163,14 @@ class ChangeMagnitudeAvg(BaseAggregation):
         Returns
         -------
         ndarray or dict of ndarray
-            Aggregated rows, shape ``(k, d)``.
+            Aggregated rows, shape ``(k, d)``. A packed row whose
+            contributors are all at or below ``change_eps`` is copied from
+            ``previous_rows`` and counted in ``row_fallback_count``.
 
         Raises
         ------
         ValueError
-            If a packed row has no contributor above ``change_eps``, or a
-            value is non-finite.
+            If a packed row has no contributors, or a value is non-finite.
         """
         del round_info, param_io
         self.row_fallback_count = 0
@@ -1172,10 +1205,9 @@ class ChangeMagnitudeAvg(BaseAggregation):
                 qs[i] = self._l2_change(vals[i, j], prev[j])
             keep = qs > self.change_eps
             if not np.any(keep):
-                raise ValueError(
-                    "ChangeMagnitudeAvg: no client exceeds change_eps for a "
-                    f"packed row (change_eps={self.change_eps})"
-                )
+                out[j] = prev[j]
+                self.row_fallback_count += 1
+                continue
             w = np.where(keep, qs, 0.0)
             w = w / w.sum()
             # Broadcast weights over contributing clients only via full n vector.
