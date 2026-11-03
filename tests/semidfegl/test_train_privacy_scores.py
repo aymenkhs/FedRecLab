@@ -35,8 +35,8 @@ def test_item_sgd_step_is_not_sign_of_gradient(make_server):
     }
     response = server._train_client(0, current_round=0)
     upload = response.updates_packages["item_embeddings"].param_value
-    # Compare a non-graph BPR negative (layer-0 upload) so the delta is
-    # exactly the SGD parameter step, not LightGCN recombination.
+    # Every uploaded row is the stepped layer-0 parameter. A dedicated
+    # BPR negative has no other writer in this comparison.
     train = set(int(i) for i in payload["train_item_ids"])
     fake = set(int(i) for i in payload["fake_item_ids"])
     neg_only = [
@@ -59,7 +59,7 @@ def test_item_sgd_step_is_not_sign_of_gradient(make_server):
 
 
 def test_uploaded_ego_dot_item_matches_compute_scores(make_server):
-    """Eval must use the same vectors BPR uploaded (layer-combined)."""
+    """Eval dots the uploaded ego with the uploaded layer-0 item row."""
     client = SemiDFEGLClientAlgorithm(embedding_dim=4, num_layers=2)
     server = make_server(client=client, num_layers=2)
     server.current_round = 0
@@ -93,14 +93,42 @@ def test_uploaded_ego_dot_item_matches_compute_scores(make_server):
     )
     np.testing.assert_allclose(scores[user_id], [expected], rtol=1e-5, atol=1e-6)
 
-    # With K>=1 the uploaded graph row is not the raw layer-0 download.
+    # The upload is one SGD step on layer-0, not the layer average.
     id_to_local = {
         int(i): loc for loc, i in enumerate(np.asarray(payload_before["item_ids"]))
     }
     layer0 = np.asarray(
         payload_before["item_embeddings"][id_to_local[pos_id]], dtype=np.float32
     )
-    assert not np.allclose(pos_vec, layer0)
+    delta = np.linalg.norm(pos_vec - layer0)
+    assert delta > 0.0
+    assert delta < 0.05 * np.linalg.norm(layer0)
+
+
+def test_next_round_reloads_stepped_layer0_item_row(make_server):
+    """A sole uploader's layer-0 row is the next round's item parameter."""
+    client = SemiDFEGLClientAlgorithm(embedding_dim=4, num_layers=2)
+    server = make_server(client=client, num_layers=2)
+    server.current_round = 0
+    server._on_round_start_server()
+    response = server._train_client(0, current_round=0)
+    upload = response.updates_packages["item_embeddings"].param_value
+    rows = np.asarray(upload["rows"], dtype=np.int64)
+    values = np.asarray(upload["values"], dtype=np.float32)
+    user_id = server._client_to_user[0]
+    train_id = int(server._user_train_items[user_id][0])
+    uploaded = values[int(np.flatnonzero(rows == train_id)[0])]
+
+    server.current_round_statistics = server._update_statistics(0, [0], [response])
+    server.aggregate_parameters([response])
+    server.current_round = 1
+    server._on_round_start_server()
+    payload = server._build_server_payload(0)
+    id_to_local = {
+        int(i): loc for loc, i in enumerate(np.asarray(payload["item_ids"]))
+    }
+    reloaded = np.asarray(payload["item_embeddings"][id_to_local[train_id]], dtype=np.float32)
+    np.testing.assert_allclose(reloaded, uploaded, rtol=1e-5, atol=1e-6)
 
 
 def test_privacy_pseudo_matches_single_positive_and_replaces_row(make_server):

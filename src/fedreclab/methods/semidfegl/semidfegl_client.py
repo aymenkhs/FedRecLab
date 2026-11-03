@@ -362,7 +362,7 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
         for _ in range(self.local_epochs):
             user_optimizer.zero_grad()
             item_optimizer.zero_grad()
-            user_c, item_c = propagate_semidfegl(
+            user_c, _item_states = propagate_semidfegl(
                 user_emb0=user_emb,
                 item_emb0=graph_emb,
                 item_is_fake=item_is_fake,
@@ -372,17 +372,19 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
                 cluster_size=cluster_size,
                 num_layers=self.num_layers,
             )
-            pos_scores = score_dot(user_c, item_c[train_graph_rows])
+            # Ranking dots this ego vector with the stored item row.
+            # Held-out items are not graph neighbours, so the item factor
+            # is the layer-0 parameter. Layer-averaged item states stay
+            # inside propagate_semidfegl.
+            pos_scores = score_dot(user_c, graph_emb[train_graph_rows])
 
             neg_score_parts: list[torch.Tensor] = []
             if neg_graph_rows:
-                neg_g = item_c[
+                neg_g = graph_emb[
                     torch.as_tensor(neg_graph_rows, dtype=torch.long, device=device)
                 ]
                 neg_score_parts.append(score_dot(user_c, neg_g))
             if neg_only_emb is not None:
-                # Dedicated BPR negatives are not graph neighbours, so they
-                # keep their layer-0 vectors and only enter the score.
                 neg_score_parts.append(score_dot(user_c, neg_only_emb))
 
             if not neg_score_parts:
@@ -411,11 +413,11 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
             all_losses.append(float(bpr.detach().cpu()))
             num_training_examples += int(train_ids.size) * int(neg_scores.numel())
 
-        # Final ego and graph items = layer-combined embeddings (eq. 6).
-        # Scoring on the server is ego · item (eq. 8), so the upload must
-        # be the same vectors BPR used, not the raw layer-0 parameters.
+        # Ego upload is the layer-combined user (the ranking left factor
+        # and the device-to-device message). Item upload is the stepped
+        # layer-0 parameter, which the next round propagates from.
         with torch.no_grad():
-            user_c, item_c = propagate_semidfegl(
+            user_c, _item_states = propagate_semidfegl(
                 user_emb0=user_emb,
                 item_emb0=graph_emb,
                 item_is_fake=item_is_fake,
@@ -426,21 +428,13 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
                 num_layers=self.num_layers,
             )
             ego_row = user_c.detach().cpu().numpy().astype(np.float32)
-            graph_combined = item_c.detach().cpu().numpy().astype(np.float32)
             if not np.isfinite(ego_row).all():
                 raise ValueError(
                     f"Non-finite ego embedding for client {training_request.client_id}"
                 )
-            if not np.isfinite(graph_combined).all():
-                raise ValueError(
-                    f"Non-finite combined item embeddings for client "
-                    f"{training_request.client_id}"
-                )
 
-        # Graph items: layer-combined. Non-graph BPR negatives never enter
-        # message passing, so their layer-0 rows are the scored vectors.
         upload_ids: list[int] = [int(i) for i in graph_ids]
-        upload_vals = [graph_combined]
+        upload_vals = [graph_emb.detach().cpu().numpy().astype(np.float32)]
         if neg_only_emb is not None:
             upload_ids.extend(neg_only_local_global)
             upload_vals.append(neg_only_emb.detach().cpu().numpy().astype(np.float32))

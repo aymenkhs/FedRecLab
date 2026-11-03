@@ -22,10 +22,12 @@ Deviations from Qu et al.
   ``run_round``.
 - ``n_fake`` means items per cluster (Figure 5 / section 4.1.4), not
   clusters per item.
-- Clients upload layer-combined item embeddings for graph nodes (the
-  vectors used in BPR and in equation 8). The next round treats those
-  rows as the new layer-0 table. Non-graph BPR negatives upload their
-  layer-0 rows unchanged.
+- The loss and the ranking score both dot the layer-combined user
+  vector with layer-0 item rows. Held-out items are not on the ego
+  graph, so they have no layer-averaged item embedding. Layer-averaged
+  item states stay inside message passing. Clients upload the stepped
+  layer-0 item rows, and the next round propagates from those rows.
+  The ego upload is the layer-combined user vector.
 - Local item updates use SGD; the user embedding uses Adam with
   persisted moments. Item Adam moments cannot live on the device, and
   one fresh Adam step per round would be ≈ signSGD on items.
