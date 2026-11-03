@@ -1,6 +1,16 @@
-from typing import Dict, List, Any
-from dataclasses import dataclass
+"""Client partition strategies for federated recommendation simulation.
 
+Partition strategies assign every training user to exactly one client and
+return a :class:`ClientPartition`. Only the training split is partitioned.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping
+
+import numpy as np
 import pandas as pd
 
 
@@ -11,19 +21,180 @@ class ClientPartition:
     user_ids_2_client_ids: Dict[int, int]
     client_to_train_indices: Dict[int, List[int]]
     client_train_sizes: Dict[int, int]
-    client_to_val_indices: Dict[int, List[int]]|None=None
-    client_to_test_indices: Dict[int, List[int]]|None=None
-    metadata: Dict[str, Any]|None=None
+    client_to_val_indices: Dict[int, List[int]] | None = None
+    client_to_test_indices: Dict[int, List[int]] | None = None
+    metadata: Dict[str, Any] | None = None
 
 
 class BaseClientPartitionStrategy:
-    def __init__(self, num_clients: int, user_col: str = "user_id", metadata: Dict[str, Any]|None=None):
+    def __init__(
+        self,
+        num_clients: int,
+        user_col: str = "user_id",
+        metadata: Dict[str, Any] | None = None,
+    ):
         self.num_clients = num_clients
         self.user_col = user_col
         self.metadata = metadata
 
     def partition(self, train_interactions: pd.DataFrame) -> ClientPartition:
         raise NotImplementedError("Subclasses must implement this method")
+
+
+def _build_client_partition(
+    train_interactions: pd.DataFrame,
+    user_col: str,
+    user_to_client: Mapping[int, int],
+    num_clients: int,
+    metadata: Dict[str, Any] | None = None,
+) -> ClientPartition:
+    """Build a :class:`ClientPartition` from a user-to-client assignment.
+
+    Parameters
+    ----------
+    train_interactions : pandas.DataFrame
+        Training interactions. Index labels are preserved in
+        ``client_to_train_indices``.
+    user_col : str
+        Column that holds user identifiers.
+    user_to_client : mapping of int to int
+        Assignment of each training user id to a client id in
+        ``0 … num_clients - 1``. Every user that appears in
+        ``train_interactions`` must be present.
+    num_clients : int
+        Number of clients. Keys ``0 … num_clients - 1`` are always
+        present in the returned maps, including empty clients.
+    metadata : dict or None, optional
+        Copied onto the returned partition. Default is None.
+
+    Returns
+    -------
+    ClientPartition
+        Partition with sorted user lists per client, the inverse user map,
+        training index lists concatenated in user-id order, and their
+        lengths as ``client_train_sizes``.
+
+    Raises
+    ------
+    ValueError
+        If ``user_col`` is missing from ``train_interactions``, or a
+        training user has no entry in ``user_to_client``.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({"user_id": [0, 0, 1], "item_id": [10, 11, 10]})
+    >>> part = _build_client_partition(df, "user_id", {0: 0, 1: 0}, 1)
+    >>> part.client_train_sizes[0]
+    3
+    """
+    if user_col not in train_interactions.columns:
+        raise ValueError(
+            f"train_interactions must contain a '{user_col}' column with "
+            "user identifiers"
+        )
+
+    client_ids_2_user_ids: Dict[int, List[int]] = {
+        client_id: [] for client_id in range(num_clients)
+    }
+    for user_id, client_id in user_to_client.items():
+        client_ids_2_user_ids[int(client_id)].append(int(user_id))
+    for client_id in client_ids_2_user_ids:
+        client_ids_2_user_ids[client_id].sort()
+
+    user_ids_2_client_ids: Dict[int, int] = {
+        int(user_id): int(client_id)
+        for user_id, client_id in user_to_client.items()
+    }
+
+    grouped = train_interactions.groupby(user_col, sort=False).groups
+    client_to_train_indices: Dict[int, List[int]] = {
+        client_id: [] for client_id in range(num_clients)
+    }
+    for client_id, user_ids in client_ids_2_user_ids.items():
+        index_list: List[int] = []
+        for user_id in user_ids:
+            if user_id not in grouped:
+                continue
+            index_list.extend(int(i) for i in grouped[user_id])
+        client_to_train_indices[client_id] = index_list
+
+    for user_id in train_interactions[user_col].unique():
+        uid = int(user_id)
+        if uid not in user_ids_2_client_ids:
+            raise ValueError(
+                f"training user {uid} has no client assignment in "
+                "user_to_client"
+            )
+
+    client_train_sizes = {
+        client_id: len(indices)
+        for client_id, indices in client_to_train_indices.items()
+    }
+
+    return ClientPartition(
+        num_clients=num_clients,
+        client_ids_2_user_ids=client_ids_2_user_ids,
+        user_ids_2_client_ids=user_ids_2_client_ids,
+        client_to_train_indices=client_to_train_indices,
+        client_train_sizes=client_train_sizes,
+        client_to_val_indices=None,
+        client_to_test_indices=None,
+        metadata=metadata,
+    )
+
+
+def _log_partition_sizes(
+    client_ids_2_user_ids: Mapping[int, List[int]],
+    client_train_sizes: Mapping[int, int],
+    *,
+    target_interaction_proportion: float | None = None,
+) -> None:
+    """Log min, max and mean client sizes in users and interactions.
+
+    Parameters
+    ----------
+    client_ids_2_user_ids : mapping of int to list of int
+        Users assigned to each client.
+    client_train_sizes : mapping of int to int
+        Training interaction counts per client.
+    target_interaction_proportion : float or None, optional
+        When set, also log the largest absolute gap between each
+        client's achieved interaction proportion and this target.
+        Default is None.
+    """
+    user_counts = np.asarray(
+        [len(users) for users in client_ids_2_user_ids.values()], dtype=float
+    )
+    interaction_counts = np.asarray(
+        [client_train_sizes[cid] for cid in client_ids_2_user_ids],
+        dtype=float,
+    )
+    logging.info(
+        "client partition sizes: users min=%s max=%s mean=%.2f; "
+        "interactions min=%s max=%s mean=%.2f",
+        int(user_counts.min()) if len(user_counts) else 0,
+        int(user_counts.max()) if len(user_counts) else 0,
+        float(user_counts.mean()) if len(user_counts) else 0.0,
+        int(interaction_counts.min()) if len(interaction_counts) else 0,
+        int(interaction_counts.max()) if len(interaction_counts) else 0,
+        float(interaction_counts.mean()) if len(interaction_counts) else 0.0,
+    )
+    if target_interaction_proportion is not None:
+        total = float(interaction_counts.sum())
+        if total > 0:
+            proportions = interaction_counts / total
+            max_gap = float(
+                np.max(np.abs(proportions - target_interaction_proportion))
+            )
+        else:
+            max_gap = 0.0
+        logging.info(
+            "client partition interaction proportion max gap vs target "
+            "%.6f: %.6f",
+            target_interaction_proportion,
+            max_gap,
+        )
 
 
 class CrossDevicePartitionStrategy(BaseClientPartitionStrategy):
@@ -34,13 +205,18 @@ class CrossDevicePartitionStrategy(BaseClientPartitionStrategy):
     unique user ids in the `u` column of `train_interactions`.
     """
 
-    def __init__(self, user_col: str = "user_id", metadata: Dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, user_col: str = "user_id", metadata: Dict[str, Any] | None = None
+    ) -> None:
         # num_clients is inferred during partition
         super().__init__(num_clients=0, user_col=user_col, metadata=metadata)
 
     def partition(self, train_interactions: pd.DataFrame) -> ClientPartition:
         if self.user_col not in train_interactions.columns:
-            raise ValueError(f"train_interactions must contain a '{self.user_col}' column with user identifiers")
+            raise ValueError(
+                f"train_interactions must contain a '{self.user_col}' "
+                "column with user identifiers"
+            )
 
         # Unique users define clients (one client per user)
         unique_users = train_interactions[self.user_col].unique()
@@ -48,12 +224,14 @@ class CrossDevicePartitionStrategy(BaseClientPartitionStrategy):
 
         # Map user ids to client ids (0-indexed)
         user_ids_2_client_ids: Dict[int, int] = {
-            int(user_id): client_id for client_id, user_id in enumerate(unique_users)
+            int(user_id): client_id
+            for client_id, user_id in enumerate(unique_users)
         }
 
         # Inverse mapping: each client id has a single associated user id
         client_ids_2_user_ids: Dict[int, List[int]] = {
-            client_id: [int(user_id)] for user_id, client_id in user_ids_2_client_ids.items()
+            client_id: [int(user_id)]
+            for user_id, client_id in user_ids_2_client_ids.items()
         }
 
         # Group interactions by user to build index lists per client
@@ -81,3 +259,221 @@ class CrossDevicePartitionStrategy(BaseClientPartitionStrategy):
             metadata=self.metadata,
         )
 
+
+class RandomUserPartitionStrategy(BaseClientPartitionStrategy):
+    """Assign whole users to a fixed number of clients by random shuffle.
+
+    Users are sorted, shuffled with a private NumPy generator, then split
+    into ``num_clients`` groups. With ``size_by="users"`` the groups have
+    near-equal user counts. With ``size_by="interactions"`` each remaining
+    user is given to the client with the largest interaction-count deficit
+    relative to a uniform target, so client interaction totals are nearly
+    equal.
+
+    Cross-silo settings use ``1 ≤ num_clients < num_users``. Setting
+    ``num_clients`` equal to the number of training users yields one user
+    per client. Setting it to ``1`` places every user on a single client.
+
+    Parameters
+    ----------
+    num_clients : int
+        Number of clients. Must be an integer ``>= 1``. The value must
+        also satisfy ``num_clients <=`` the number of distinct training
+        users when :meth:`partition` runs.
+    size_by : {"users", "interactions"}, optional
+        Quantity to balance across clients. ``"users"`` (default) splits
+        users into contiguous chunks whose sizes differ by at most one.
+        ``"interactions"`` uses greedy fill against uniform interaction
+        targets.
+    seed : int or None, optional
+        Seed for the strategy's ``numpy.random.Generator``. ``None``
+        leaves the generator unseeded. Default is None.
+    user_col : str, optional
+        User-id column in the training frame. Default is ``"user_id"``.
+    metadata : dict or None, optional
+        Stored on the strategy and copied onto the returned partition.
+        Default is None.
+
+    Raises
+    ------
+    ValueError
+        If ``num_clients`` is not an integer ``>= 1``, or ``size_by`` is
+        not ``"users"`` or ``"interactions"``. :meth:`partition` also
+        raises if ``user_col`` is missing or ``num_clients`` exceeds the
+        number of distinct training users.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({
+    ...     "user_id": [0, 0, 1, 2, 2, 3],
+    ...     "item_id": [10, 11, 10, 12, 13, 10],
+    ... })
+    >>> strategy = RandomUserPartitionStrategy(2, seed=0)
+    >>> part = strategy.partition(df)
+    >>> part.num_clients
+    2
+    >>> sorted(part.user_ids_2_client_ids)
+    [0, 1, 2, 3]
+    """
+
+    def __init__(
+        self,
+        num_clients: int,
+        size_by: str = "users",
+        seed: int | None = None,
+        user_col: str = "user_id",
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        if (
+            not isinstance(num_clients, int)
+            or isinstance(num_clients, bool)
+            or num_clients < 1
+        ):
+            raise ValueError(
+                f"num_clients must be an integer >= 1, got {num_clients!r}"
+            )
+        if size_by not in {"users", "interactions"}:
+            raise ValueError(
+                "size_by must be 'users' or 'interactions', "
+                f"got {size_by!r}"
+            )
+        super().__init__(
+            num_clients=num_clients, user_col=user_col, metadata=metadata
+        )
+        self.size_by = size_by
+        self.seed = seed
+
+    def partition(self, train_interactions: pd.DataFrame) -> ClientPartition:
+        """Assign every training user to one client and build the partition.
+
+        Parameters
+        ----------
+        train_interactions : pandas.DataFrame
+            Training interactions. Must contain ``self.user_col``.
+
+        Returns
+        -------
+        ClientPartition
+            Partition over ``self.num_clients`` clients.
+
+        Raises
+        ------
+        ValueError
+            If ``user_col`` is missing, or there are fewer distinct
+            training users than ``num_clients``.
+        """
+        if self.user_col not in train_interactions.columns:
+            raise ValueError(
+                f"train_interactions must contain a '{self.user_col}' "
+                "column with user identifiers"
+            )
+
+        user_ids = np.sort(
+            train_interactions[self.user_col].unique().astype(np.int64)
+        )
+        num_users = int(user_ids.size)
+        if self.num_clients > num_users:
+            raise ValueError(
+                f"num_clients ({self.num_clients}) must be <= number of "
+                f"distinct training users ({num_users})"
+            )
+
+        rng = np.random.default_rng(self.seed)
+        shuffled = user_ids.copy()
+        rng.shuffle(shuffled)
+
+        user_interaction_counts = (
+            train_interactions.groupby(self.user_col).size().astype(np.int64)
+        )
+        # Align counts to integer user ids after the unique/sort path.
+        counts_by_user = {
+            int(uid): int(user_interaction_counts.loc[uid])
+            for uid in user_ids
+        }
+
+        if self.size_by == "users":
+            user_to_client = self._assign_by_users(shuffled)
+            target_proportion = None
+        else:
+            user_to_client = self._assign_by_interactions(
+                shuffled, counts_by_user, n_train=len(train_interactions)
+            )
+            target_proportion = 1.0 / float(self.num_clients)
+
+        partition = _build_client_partition(
+            train_interactions,
+            self.user_col,
+            user_to_client,
+            self.num_clients,
+            metadata=self.metadata,
+        )
+        _log_partition_sizes(
+            partition.client_ids_2_user_ids,
+            partition.client_train_sizes,
+            target_interaction_proportion=target_proportion,
+        )
+        return partition
+
+    def _assign_by_users(self, shuffled_users: np.ndarray) -> Dict[int, int]:
+        """Split shuffled users into contiguous near-equal chunks.
+
+        Parameters
+        ----------
+        shuffled_users : numpy.ndarray
+            Shuffled user ids of length ``num_users``.
+
+        Returns
+        -------
+        dict of int to int
+            Mapping from user id to client id.
+        """
+        num_users = int(shuffled_users.size)
+        base = num_users // self.num_clients
+        remainder = num_users % self.num_clients
+        user_to_client: Dict[int, int] = {}
+        offset = 0
+        for client_id in range(self.num_clients):
+            size = base + (1 if client_id < remainder else 0)
+            chunk = shuffled_users[offset : offset + size]
+            for user_id in chunk:
+                user_to_client[int(user_id)] = client_id
+            offset += size
+        return user_to_client
+
+    def _assign_by_interactions(
+        self,
+        shuffled_users: np.ndarray,
+        counts_by_user: Mapping[int, int],
+        n_train: int,
+    ) -> Dict[int, int]:
+        """Greedy-fill clients toward uniform interaction targets.
+
+        Parameters
+        ----------
+        shuffled_users : numpy.ndarray
+            Shuffled user ids.
+        counts_by_user : mapping of int to int
+            Training interaction count per user.
+        n_train : int
+            Total number of training interactions.
+
+        Returns
+        -------
+        dict of int to int
+            Mapping from user id to client id.
+        """
+        target = float(n_train) / float(self.num_clients)
+        sizes = np.zeros(self.num_clients, dtype=np.float64)
+        user_to_client: Dict[int, int] = {}
+        for user_id in shuffled_users:
+            uid = int(user_id)
+            deficits = target - sizes
+            client_id = int(np.argmax(deficits))
+            user_to_client[uid] = client_id
+            sizes[client_id] += float(counts_by_user[uid])
+        return user_to_client
+
+
+# Previous name. Kept so existing imports continue to resolve to the same class.
+CrossDeviceSplittingStrategy = CrossDevicePartitionStrategy
