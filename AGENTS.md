@@ -67,3 +67,25 @@ Subclass the corresponding base class (`BaseAggregation`, `BaseClientSelection`,
 - Docstrings updated (including simulation shortcuts and deviations from the paper).
 - Tests for a method go in `tests/<method>/`. Names describe the behaviour; do not use issue IDs.
 - A summary of what changed, why, and what the maintainer should run to verify it.
+
+## Commit messages
+
+Conventional Commits subject, Linux-kernel-style body.
+
+```
+<type>: <imperative summary, lowercase, no period, <=72 chars>
+
+<Why: the problem or motivation, in plain prose.>
+
+<What: how this change solves it, and anything non-obvious.
+Mention trade-offs or alternatives rejected if relevant.>
+
+<Optional trailers, e.g. Refs: #12>
+```
+
+- types: feat, fix, refactor, perf, test, docs, build, ci, chore
+- scopes: frontend, backend, api, db, auth, pricing, catalog
+- imperative mood ("add", not "added"/"adds"); never "this commit"
+- wrap body at 72 columns; explain why before what
+- one logical change per commit
+
