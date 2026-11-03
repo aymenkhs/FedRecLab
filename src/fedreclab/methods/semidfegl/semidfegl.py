@@ -22,6 +22,10 @@ Deviations from Qu et al.
   ``run_round``.
 - ``n_fake`` means items per cluster (Figure 5 / section 4.1.4), not
   clusters per item.
+- Clients upload layer-combined item embeddings for graph nodes (the
+  vectors used in BPR and in equation 8). The next round treats those
+  rows as the new layer-0 table. Non-graph BPR negatives upload their
+  layer-0 rows unchanged.
 - Privacy (pseudo embeddings, L1 clip, Laplace) is off by default; the
   paper does not publish clip or noise scales.
 - LightGCN only; GCN / GAT / GraphSAGE from section 4.6 are not

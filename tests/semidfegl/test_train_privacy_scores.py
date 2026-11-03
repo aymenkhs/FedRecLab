@@ -20,6 +20,51 @@ def test_privacy_off_upload_is_exactly_loss_updated_rows(make_server):
     assert server.client_algorithm.apply_privacy(None, response) is response
 
 
+def test_uploaded_ego_dot_item_matches_compute_scores(make_server):
+    """Eval must use the same vectors BPR uploaded (layer-combined)."""
+    client = SemiDFEGLClientAlgorithm(embedding_dim=4, num_layers=2)
+    server = make_server(client=client, num_layers=2)
+    server.current_round = 0
+    server._on_round_start_server()
+    payload_before = server._build_server_payload(0)
+    response = server._train_client(0, current_round=0)
+
+    user_id = server._client_to_user[0]
+    ego_upload = response.updates_packages["ego_embeddings"].param_value
+    item_upload = response.updates_packages["item_embeddings"].param_value
+    ego = np.asarray(ego_upload["values"][0], dtype=np.float32)
+    item_rows = np.asarray(item_upload["rows"], dtype=np.int64)
+    item_vals = np.asarray(item_upload["values"], dtype=np.float32)
+    train_ids = set(int(i) for i in payload_before["train_item_ids"])
+    pos_idx = next(i for i, row in enumerate(item_rows) if int(row) in train_ids)
+    pos_id = int(item_rows[pos_idx])
+    pos_vec = item_vals[pos_idx]
+    expected = float(pos_vec @ ego)
+
+    # Patch only this client's uploads into global tables (sole owner).
+    egos = np.asarray(server.global_parameters["ego_embeddings"], dtype=np.float32).copy()
+    items = np.asarray(server.global_parameters["item_embeddings"], dtype=np.float32).copy()
+    egos[user_id] = ego
+    items[pos_id] = pos_vec
+    scores = client.compute_scores(
+        client_id=0,
+        candidate_items_per_user={user_id: np.asarray([pos_id], dtype=np.int64)},
+        global_parameters={"ego_embeddings": egos, "item_embeddings": items},
+        client_state=response.updated_client_state,
+        extra_payload={},
+    )
+    np.testing.assert_allclose(scores[user_id], [expected], rtol=1e-5, atol=1e-6)
+
+    # With K>=1 the uploaded graph row is not the raw layer-0 download.
+    id_to_local = {
+        int(i): loc for loc, i in enumerate(np.asarray(payload_before["item_ids"]))
+    }
+    layer0 = np.asarray(
+        payload_before["item_embeddings"][id_to_local[pos_id]], dtype=np.float32
+    )
+    assert not np.allclose(pos_vec, layer0)
+
+
 def test_privacy_pseudo_matches_single_positive_and_replaces_row(make_server):
     client = SemiDFEGLClientAlgorithm(
         embedding_dim=4,

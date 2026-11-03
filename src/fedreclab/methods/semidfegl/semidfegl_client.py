@@ -398,9 +398,11 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
             all_losses.append(float(bpr.detach().cpu()))
             num_training_examples += int(train_ids.size) * int(neg_scores.numel())
 
-        # Final ego = layer-combined user after the last step.
+        # Final ego and graph items = layer-combined embeddings (eq. 6).
+        # Scoring on the server is ego · item (eq. 8), so the upload must
+        # be the same vectors BPR used, not the raw layer-0 parameters.
         with torch.no_grad():
-            user_c, _item_c = propagate_semidfegl(
+            user_c, item_c = propagate_semidfegl(
                 user_emb0=user_emb,
                 item_emb0=graph_emb,
                 item_is_fake=item_is_fake,
@@ -411,15 +413,21 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
                 num_layers=self.num_layers,
             )
             ego_row = user_c.detach().cpu().numpy().astype(np.float32)
+            graph_combined = item_c.detach().cpu().numpy().astype(np.float32)
             if not np.isfinite(ego_row).all():
                 raise ValueError(
                     f"Non-finite ego embedding for client {training_request.client_id}"
                 )
+            if not np.isfinite(graph_combined).all():
+                raise ValueError(
+                    f"Non-finite combined item embeddings for client "
+                    f"{training_request.client_id}"
+                )
 
-        # Upload every graph item and every dedicated BPR negative that
-        # entered the loss (all of them did).
+        # Graph items: layer-combined. Non-graph BPR negatives never enter
+        # message passing, so their layer-0 rows are the scored vectors.
         upload_ids: list[int] = [int(i) for i in graph_ids]
-        upload_vals = [graph_emb.detach().cpu().numpy().astype(np.float32)]
+        upload_vals = [graph_combined]
         if neg_only_emb is not None:
             upload_ids.extend(neg_only_local_global)
             upload_vals.append(neg_only_emb.detach().cpu().numpy().astype(np.float32))
