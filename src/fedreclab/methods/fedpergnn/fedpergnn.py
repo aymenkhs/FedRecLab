@@ -7,6 +7,16 @@ from src.fedreclab.federated.base_server import BaseFederatedServer
 from src.fedreclab.federated.utils import ParamIO
 from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
+# Set on the client. The server copies the three widths; the flag is
+# client-only because only local Adam consults it.
+_CLIENT_OWNED_SETTINGS = (
+    "hidden_dim",
+    "history_len",
+    "neighbor_len",
+    "neighbor_embeddings_trainable",
+)
+_ARCHITECTURE_ATTRS = ("hidden_dim", "history_len", "neighbor_len")
+
 
 def default_param_ios() -> dict[str, ParamIO]:
     # TODO: switch model_state, item_embeddings and user_embeddings to
@@ -33,15 +43,52 @@ class FedPerGNN(BaseFederatedServer):
     several neighbour proposals share a row). Owner ClientState is not
     overwritten by the mirror.
 
+    ``hidden_dim``, ``history_len`` and ``neighbor_len`` are copied from
+    ``client_algorithm`` at construction. They are not arguments of this
+    class. The client allocates its user embedding before the server
+    builds the global table, so the client is the source of the width.
+    ``neighbor_embeddings_trainable`` is not stored here. It only decides
+    whether that client's Adam treats neighbour rows as parameters. The
+    mirror accepts the uploaded rows either way. The anchor user's
+    embedding is always trainable on the client; the flag does not cover it.
+
+    Parameters
+    ----------
+    warmup_rounds : int, optional
+        Rounds during which neighbour embeddings in the expansion payload
+        are zeros. Default is 1.
+    expanded_users : dict of int to ndarray or None, optional
+        Caller-supplied neighbour user ids, keyed by client id, shape
+        ``(history_len, neighbor_len)``. Empty slots are -1. Default is
+        None, which samples neighbours from the training interactions.
+    history_item_ids : dict of int to ndarray or None, optional
+        Caller-supplied history catalogue ids, keyed by client id.
+        Default is None, which builds each history from that user's
+        training items.
+    expansion_seed : int or None, optional
+        Seed for neighbour sampling and the initial user table. If None,
+        the server ``seed`` is used. Default is None.
+    **kwargs
+        Arguments of :class:`BaseFederatedServer`. ``client_algorithm``
+        must expose ``hidden_dim``, ``history_len`` and ``neighbor_len``.
+
+    Raises
+    ------
+    TypeError
+        If ``hidden_dim``, ``history_len``, ``neighbor_len`` or
+        ``neighbor_embeddings_trainable`` are passed here, or if
+        ``client_algorithm`` does not expose the three widths.
+
     Simulation shortcuts:
       The server holds a canonical user-embedding table used as an expansion
       mirror (neighbour lookup). Each client's own embedding lives in
-      ClientState and is uploaded every round. neighbour_embeddings_trainable
-      still lets other clients propose edits to your row in the mirror; those
-      edits no longer become your next local starting point. A trainable
-      neighbour proposal is that row after the same local Adam steps as
-      the proposer's owner embedding. Plaintext sparse
-      item uploads reveal which items this client trained on.
+      ClientState and is uploaded every round. When the client sets
+      ``neighbor_embeddings_trainable``, other clients can still propose
+      edits to your row in the mirror; those edits no longer become your
+      next local starting point. A trainable neighbour proposal is that
+      row after the same local Adam steps as the proposer's owner
+      embedding. Plaintext sparse item uploads reveal which items this
+      client trained on.
 
     Deviations from Wu et al.:
       The rating predictor is the SI inner product of the user hidden
@@ -83,23 +130,38 @@ class FedPerGNN(BaseFederatedServer):
     """
     def __init__(
         self,
-        hidden_dim: int = 64,
-        history_len: int = 20,
-        neighbor_len: int = 10,
+        *,
         warmup_rounds: int = 1,
-        neighbor_embeddings_trainable: bool = False,
         expanded_users: Optional[Dict[int, np.ndarray]] = None,
         history_item_ids: Optional[Dict[int, np.ndarray]] = None,
         expansion_seed: int | None = None,
         **kwargs: Any,
     ) -> None:
-        self.hidden_dim = hidden_dim
-        self.history_len = history_len
-        self.neighbor_len = neighbor_len
+        misplaced = [name for name in _CLIENT_OWNED_SETTINGS if name in kwargs]
+        if misplaced:
+            names = ", ".join(misplaced)
+            raise TypeError(
+                f"{names} are set on FedPerGNNClientAlgorithm, not on "
+                "FedPerGNN. The server copies hidden_dim, history_len and "
+                "neighbor_len from client_algorithm. "
+                "neighbor_embeddings_trainable is client-only and applies "
+                "only to neighbour rows; the anchor user embedding is "
+                "always trainable."
+            )
+        client = kwargs.get("client_algorithm")
+        if client is not None:
+            missing = [name for name in _ARCHITECTURE_ATTRS if not hasattr(client, name)]
+            if missing:
+                names = ", ".join(missing)
+                raise TypeError(
+                    f"{type(client).__name__} is missing {names}. FedPerGNN "
+                    "reads hidden_dim, history_len and neighbor_len from "
+                    "client_algorithm."
+                )
+            self.hidden_dim = client.hidden_dim
+            self.history_len = client.history_len
+            self.neighbor_len = client.neighbor_len
         self.warmup_rounds = warmup_rounds
-
-        # neighbor_embeddings_trainable applies only to neighbor rows; central user is always trainable.
-        self.neighbor_embeddings_trainable = neighbor_embeddings_trainable
 
         # Optional externally-provided expansion structure
         self._provided_neighbor_user_ids = expanded_users

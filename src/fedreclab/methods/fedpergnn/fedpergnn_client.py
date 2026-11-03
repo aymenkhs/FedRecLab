@@ -6,11 +6,16 @@ name-keyed optimiser dict; that embedding is the source of truth for the
 owner's trajectory. The server user table is a mirror updated by the sparse
 upload each round (expansion / neighbours). With neighbor_embeddings_trainable,
 other clients can still write the owner's row in the mirror, but that no
-longer becomes this client's next starting point. Those other-user rows are
-parameters of this round's Adam, initialised from the expansion payload.
-Repeated slots of one user share one vector, and the upload is that vector
-after the local epochs. Their moments are not kept: the mirror, not this
-client's optimiser, is the next round's starting point.
+longer becomes this client's next starting point. The flag covers neighbour
+rows only; the anchor user's embedding is always trainable. Those other-user
+rows are parameters of this round's Adam, initialised from the expansion
+payload. Repeated slots of one user share one vector, and the upload is
+that vector after the local epochs. Their moments are not kept: the
+mirror, not this client's optimiser, is the next round's starting point.
+
+``FedPerGNN`` copies ``hidden_dim``, ``history_len`` and ``neighbor_len``
+from this object at construction. ``neighbor_embeddings_trainable`` is
+read only by this algorithm.
 
 Training task (``task``):
   ``"rating"`` (default) follows Wu et al.: MSE on observed ratings only,
