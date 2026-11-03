@@ -92,3 +92,38 @@ def category_user_metrics(
         num = np.where(n > 0, cum[np.maximum(n - 1, 0), np.arange(full.shape[1])], 0.0)
         out["crp"] = _safe_div(num, R)
     return out
+
+
+def beyond_parity_metrics(
+    pairs: pd.DataFrame,
+    user_groups: Mapping[Hashable, Hashable],
+    group_a: Hashable,
+    group_b: Hashable,
+) -> Dict[str, float]:
+    df = pairs.copy()
+    df["grp"] = df["user_id"].map(user_groups)
+    df = df[df["grp"].isin([group_a, group_b])]
+    pred_a = df.loc[df["grp"] == group_a, "pred"]
+    pred_b = df.loc[df["grp"] == group_b, "pred"]
+    if pred_a.empty or pred_b.empty:
+        return {}
+    # Non-parity: |E_g[y_hat] - E_notg[y_hat]| over ALL predictions of each group
+    # (overall means, not per item).
+    out = {"bp_upar": float(abs(pred_a.mean() - pred_b.mean()))}
+ 
+    # Per-item metrics: only items rated by users of both groups contribute.
+    g = df.groupby(["item_id", "grp"])[["pred", "rating"]].mean().unstack("grp")
+    g = g[g[("pred", group_a)].notna() & g[("pred", group_b)].notna()]
+    if g.empty:
+        return out
+    ea = g[("pred", group_a)] - g[("rating", group_a)]  # E_g[y_hat]_j - E_g[r]_j
+    eb = g[("pred", group_b)] - g[("rating", group_b)]
+    out.update(
+        {
+            "bp_uval": float((ea - eb).abs().mean()),
+            "bp_uabs": float((ea.abs() - eb.abs()).abs().mean()),
+            "bp_uunder": float((np.maximum(0, -ea) - np.maximum(0, -eb)).abs().mean()),
+            "bp_uover": float((np.maximum(0, ea) - np.maximum(0, eb)).abs().mean()),
+        }
+    )
+    return out

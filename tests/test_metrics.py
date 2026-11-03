@@ -18,7 +18,7 @@ import pytest
 from src.fedreclab.data.metric import (
     # BiasMetrics,
     CategoryMatrix,
-    # beyond_parity_metrics,
+    beyond_parity_metrics,
     category_user_metrics,
 )
 
@@ -60,7 +60,6 @@ def make_bm(train, **kw):
 
 
 def kl(p, q, alpha=0.01):
-    """Independent re-implementation of Steck's smoothed KL used for expectations."""
     qt = [(1 - alpha) * qi + alpha * pi for pi, qi in zip(p, q)]
     return sum(pi * math.log(pi / qi) for pi, qi in zip(p, qt) if pi > 0)
 
@@ -248,80 +247,80 @@ class TestGBS:
 # # =====================================================================
 # # Beyond Parity
 # # =====================================================================
-# def _bp_pairs():
-#     # users 0,1 = f ; user 2 = m
-#     return pd.DataFrame(
-#         [
-#             (0, 0, 4.0, 5.0),
-#             (1, 0, 2.0, 3.0),  # f item0: pred mean 3, rating mean 4
-#             (2, 0, 3.0, 3.0),  # m item0: pred 3, rating 3
-#             (0, 1, 2.0, 1.0),  # f item1
-#             (2, 1, 4.0, 2.0),  # m item1
-#             (0, 2, 5.0, 5.0),  # item2 only f -> dropped
-#         ],
-#         columns=["user_id", "item_id", "pred", "rating"],
-#     )
+def _bp_pairs():
+    # users 0,1 = f ; user 2 = m
+    return pd.DataFrame(
+        [
+            (0, 0, 4.0, 5.0),
+            (1, 0, 2.0, 3.0),  # f item0: pred mean 3, rating mean 4
+            (2, 0, 3.0, 3.0),  # m item0: pred 3, rating 3
+            (0, 1, 2.0, 1.0),  # f item1
+            (2, 1, 4.0, 2.0),  # m item1
+            (0, 2, 5.0, 5.0),  # item2 only f -> dropped
+        ],
+        columns=["user_id", "item_id", "pred", "rating"],
+    )
 
 
-# class TestBeyondParity:
-#     # item0: ea=-1 eb=0 ; item1: ea=+1 eb=+2 ; pred f=[3,2] pred m=[3,4]
-#     def test_hand_computed(self):
-#         out = beyond_parity_metrics(_bp_pairs(), GROUPS, "f", "m")
-#         assert out["bp_uval"] == pytest.approx(1.0)
-#         assert out["bp_uabs"] == pytest.approx(1.0)
-#         assert out["bp_uunder"] == pytest.approx(0.5)
-#         assert out["bp_uover"] == pytest.approx(0.5)
-#         assert out["bp_upar"] == pytest.approx(1.0)
+class TestBeyondParity:
+    # item0: ea=-1 eb=0 ; item1: ea=+1 eb=+2 ; pred f=[3,2] pred m=[3,4]
+    def test_hand_computed(self):
+        out = beyond_parity_metrics(_bp_pairs(), GROUPS, "f", "m")
+        assert out["bp_uval"] == pytest.approx(1.0)
+        assert out["bp_uabs"] == pytest.approx(1.0)
+        assert out["bp_uunder"] == pytest.approx(0.5)
+        assert out["bp_uover"] == pytest.approx(0.5)
+        assert out["bp_upar"] == pytest.approx(0.25)
 
-#     def test_symmetric_in_group_order(self):
-#         a = beyond_parity_metrics(_bp_pairs(), GROUPS, "f", "m")
-#         b = beyond_parity_metrics(_bp_pairs(), GROUPS, "m", "f")
-#         for k in a:
-#             assert a[k] == pytest.approx(b[k])
+    def test_symmetric_in_group_order(self):
+        a = beyond_parity_metrics(_bp_pairs(), GROUPS, "f", "m")
+        b = beyond_parity_metrics(_bp_pairs(), GROUPS, "m", "f")
+        for k in a:
+            assert a[k] == pytest.approx(b[k])
 
-#     def test_identical_groups_are_zero(self):
-#         rows = []
-#         for u, g in [(0, "f"), (1, "m")]:
-#             rows += [(u, 0, 3.0, 4.0), (u, 1, 2.0, 1.0)]
-#         df = pd.DataFrame(rows, columns=["user_id", "item_id", "pred", "rating"])
-#         out = beyond_parity_metrics(df, {0: "f", 1: "m"}, "f", "m")
-#         assert all(v == pytest.approx(0.0) for v in out.values())
+    def test_identical_groups_are_zero(self):
+        rows = []
+        for u, g in [(0, "f"), (1, "m")]:
+            rows += [(u, 0, 3.0, 4.0), (u, 1, 2.0, 1.0)]
+        df = pd.DataFrame(rows, columns=["user_id", "item_id", "pred", "rating"])
+        out = beyond_parity_metrics(df, {0: "f", 1: "m"}, "f", "m")
+        assert all(v == pytest.approx(0.0) for v in out.values())
 
-#     def test_no_item_rated_by_both_groups_returns_empty(self):
-#         df = pd.DataFrame(
-#             [(0, 0, 1.0, 1.0), (2, 1, 1.0, 1.0)],
-#             columns=["user_id", "item_id", "pred", "rating"],
-#         )
-#         assert beyond_parity_metrics(df, GROUPS, "f", "m") == {}
+    def test_no_item_rated_by_both_groups_returns_empty(self):
+        df = pd.DataFrame(
+            [(0, 0, 1.0, 1.0), (2, 1, 1.0, 1.0)],
+            columns=["user_id", "item_id", "pred", "rating"],
+        )
+        assert beyond_parity_metrics(df, GROUPS, "f", "m") == {}
 
-#     def test_other_group_labels_ignored(self):
-#         groups = {**GROUPS, 9: "x"}
-#         df = pd.concat(
-#             [_bp_pairs(), pd.DataFrame([(9, 0, 100.0, 0.0)], columns=_bp_pairs().columns)]
-#         )
-#         a = beyond_parity_metrics(df, groups, "f", "m")
-#         b = beyond_parity_metrics(_bp_pairs(), GROUPS, "f", "m")
-#         for k in a:
-#             assert a[k] == pytest.approx(b[k])
+    def test_other_group_labels_ignored(self):
+        groups = {**GROUPS, 9: "x"}
+        df = pd.concat(
+            [_bp_pairs(), pd.DataFrame([(9, 0, 100.0, 0.0)], columns=_bp_pairs().columns)]
+        )
+        a = beyond_parity_metrics(df, groups, "f", "m")
+        b = beyond_parity_metrics(_bp_pairs(), GROUPS, "f", "m")
+        for k in a:
+            assert a[k] == pytest.approx(b[k])
 
-#     def test_one_group_absent_returns_empty(self):
-#         df = _bp_pairs()
-#         df = df[df["user_id"].isin([0, 1])]
-#         assert beyond_parity_metrics(df, GROUPS, "f", "m") == {}
+    def test_one_group_absent_returns_empty(self):
+        df = _bp_pairs()
+        df = df[df["user_id"].isin([0, 1])]
+        assert beyond_parity_metrics(df, GROUPS, "f", "m") == {}
 
-#     def test_empty_frame(self):
-#         df = pd.DataFrame(columns=["user_id", "item_id", "pred", "rating"])
-#         assert beyond_parity_metrics(df, GROUPS, "f", "m") == {}
+    def test_empty_frame(self):
+        df = pd.DataFrame(columns=["user_id", "item_id", "pred", "rating"])
+        assert beyond_parity_metrics(df, GROUPS, "f", "m") == {}
 
-#     def test_through_compute(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED, eval_pairs=_bp_pairs())
-#         assert s["bp_uval"] == pytest.approx(1.0)
+    def test_through_compute(self, train):
+        s, _ = make_bm(train).compute(RANK_MIXED, eval_pairs=_bp_pairs())
+        assert s["bp_uval"] == pytest.approx(1.0)
 
-#     def test_compute_skips_bp_without_groups_or_pairs(self, train):
-#         s1, _ = make_bm(train, user_groups=None).compute(RANK_MIXED, eval_pairs=_bp_pairs())
-#         s2, _ = make_bm(train).compute(RANK_MIXED)
-#         assert not any(k.startswith("bp_") for k in s1)
-#         assert not any(k.startswith("bp_") for k in s2)
+    def test_compute_skips_bp_without_groups_or_pairs(self, train):
+        s1, _ = make_bm(train, user_groups=None).compute(RANK_MIXED, eval_pairs=_bp_pairs())
+        s2, _ = make_bm(train).compute(RANK_MIXED)
+        assert not any(k.startswith("bp_") for k in s1)
+        assert not any(k.startswith("bp_") for k in s2)
 
 
 # # =====================================================================
