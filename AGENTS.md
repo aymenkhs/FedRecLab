@@ -40,7 +40,7 @@ Imports currently use the `src.fedreclab` root and must be run from the reposito
 9. Simulation shortcuts (e.g. a server using global knowledge in place of a privacy protocol) are allowed only if declared in the class docstring under "Simulation shortcuts".
 10. Never silence numerical problems (`nan_to_num`, skipping non-finite losses). Fail loudly with a clear message.
 11. Reproducibility: take randomness from seeded generators passed in from configuration, not from global `random` / `np.random` / unseeded torch.
-12. Any Function or class added should have a full docstring with expected parameters and returns, expetions raised and examples. Follow numpy syle docstring. A reader should know what each function does when reading it.
+12. Any Function or class added should have a full docstring with expected parameters and returns, expetions raised and examples. Follow numpy syle docstring. A reader should know what each function does when reading it. Don't write chat, plan or instruction specific information in the docstring, any part of the docstring must be understandle from outside the project.
 13. Do not use 0 as a padding ID for items or users: 0 is a real ID after remapping. Shift indices or use explicit masks.
 14. Client algorithms, selectors, aggregators and evaluators are single-use: build new ones for every server. The dataset may be shared.
 
@@ -55,7 +55,8 @@ Hooks available to subclasses:
 1. Read the paper and any reference code. Write a short fidelity note: task (rating prediction or ranking), loss, what is exchanged, aggregation, privacy mechanisms, expansion, and defaults with their source.
 2. Propose the `ParamIO` table and the hooks you will use. Get approval.
 3. Implement `methods/<name>/<name>_model.py`, `<name>_client.py` (subclass `BaseClientAlgorithm`), `<name>.py` (subclass `BaseFederatedServer`).
-4. Declare simulation shortcuts and deviations in docstrings.
+4. Declare simulation shortcuts and deviations in the reply.
+5. Before writing code, state in a few lines: what you will change, why, which files, the wait for confirmation.
 
 ## Adding an aggregator, selector, split or partition strategy
 Subclass the corresponding base class (`BaseAggregation`, `BaseClientSelection`, `BaseSplitStrategy`, `BaseClientPartitionStrategy`). Keep the constructor minimal. State the expected update format and what the aggregator needs to see (individual updates or only their sum; this matters for secure-aggregation compatibility).
@@ -64,6 +65,5 @@ Subclass the corresponding base class (`BaseAggregation`, `BaseClientSelection`,
 - No new imports from repository-root scripts; no `isinstance` checks on aggregator classes in method code.
 - No validation/test data used outside evaluation.
 - Docstrings updated (including simulation shortcuts and deviations from the paper).
-- The relevant `docs/issues/*.md` entry updated if you fixed or found an issue.
 - Tests for a method go in `tests/<method>/`. Names describe the behaviour; do not use issue IDs.
 - A summary of what changed, why, and what the maintainer should run to verify it.
