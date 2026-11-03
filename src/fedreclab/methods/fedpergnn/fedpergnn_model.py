@@ -17,11 +17,12 @@ class FedPerGNNModel(nn.Module):
     """Server-resident GAT and item table; the owner user row is passed in.
 
     History and neighbour attention build a user hidden state that does
-    not depend on the target item. The score is the inner product of that
-    state and the target item embedding (SI predictor). There is no
-    concat-linear output layer and no output sigmoid: ranking order of
-    an inner product is unchanged by a monotone map, and rating
-    regression needs an unbounded score.
+    not depend on the target item. ``user_representation`` returns that
+    state once per user. ``score`` is its inner product with the target
+    item embeddings (SI predictor). There is no concat-linear output
+    layer and no output sigmoid: ranking order of an inner product is
+    unchanged by a monotone map, and rating regression needs an
+    unbounded score.
 
     The sigmoid on ``history_item_proj`` is a hidden activation from the
     Keras GAT, not the predictor. Target items that are not in the local
@@ -149,6 +150,153 @@ class FedPerGNNModel(nn.Module):
         for name, tensor in named.items():
             tensor.data.copy_(as_tensor(server_state[name]).to(device=tensor.device))
 
+    def user_representation(
+        self,
+        history_item_ids: torch.Tensor,
+        user_embedding: torch.Tensor,
+        neighbor_embeddings: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build the item-independent GAT hidden state for one user.
+
+        History and neighbour tensors are encoded once. Call ``score``
+        with the result for every target item of this user.
+
+        Parameters
+        ----------
+        history_item_ids : torch.Tensor
+            Padded history ids, shape ``(L,)``, dtype int64. Item id 0
+            is treated as a padded history position.
+        user_embedding : torch.Tensor
+            Client-resident owner row, shape ``(H,)`` or ``(1, H)``.
+        neighbor_embeddings : torch.Tensor or None, optional
+            Neighbour rows, shape ``(L, N, H)``. ``None`` skips the
+            neighbour GAT and uses projected history items only.
+            All-zero neighbour rows are padding.
+
+        Returns
+        -------
+        torch.Tensor
+            User hidden state, shape ``(H,)``.
+
+        Raises
+        ------
+        ValueError
+            If ``history_item_ids`` is not a vector, ``user_embedding``
+            does not contain ``hidden_dim`` elements, or
+            ``neighbor_embeddings`` is not ``(L, N, H)`` aligned with
+            the history.
+
+        Examples
+        --------
+        >>> m = FedPerGNNModel(num_items=5, hidden_dim=4, history_len=2, neighbor_len=1)
+        >>> h = m.user_representation(torch.tensor([1, 2]), torch.zeros(4))
+        >>> tuple(h.shape)
+        (4,)
+        """
+        if history_item_ids.dim() != 1:
+            raise ValueError(
+                "history_item_ids must have shape (L,); "
+                f"got {tuple(history_item_ids.shape)}"
+            )
+        u_base = user_embedding.reshape(-1)
+        if u_base.numel() != self.hidden_dim:
+            raise ValueError(
+                f"user_embedding must have {self.hidden_dim} elements; "
+                f"got shape {tuple(user_embedding.shape)}"
+            )
+
+        hist_item_emb = self.item_embeddings(history_item_ids)  # (L, H)
+        hist_item_emb = torch.sigmoid(self.history_item_proj(hist_item_emb))
+
+        if neighbor_embeddings is not None:
+            if neighbor_embeddings.dim() != 3:
+                raise ValueError(
+                    "neighbor_embeddings must have shape (L, N, H); "
+                    f"got {tuple(neighbor_embeddings.shape)}"
+                )
+            if neighbor_embeddings.shape[0] != history_item_ids.shape[0]:
+                raise ValueError(
+                    "neighbor_embeddings history length "
+                    f"{neighbor_embeddings.shape[0]} does not match "
+                    f"history_item_ids length {history_item_ids.shape[0]}"
+                )
+            if neighbor_embeddings.shape[-1] != self.hidden_dim:
+                raise ValueError(
+                    "neighbor_embeddings width "
+                    f"{neighbor_embeddings.shape[-1]} does not match "
+                    f"hidden_dim {self.hidden_dim}"
+                )
+            neigh_proj = self.neighbor_proj(neighbor_embeddings)  # (L, N, H)
+            n_neighbors = neighbor_embeddings.size(1)
+            hist_expanded = hist_item_emb.unsqueeze(1).expand(-1, n_neighbors, -1)
+            att_input = torch.cat([hist_expanded, neigh_proj], dim=-1)  # (L, N, 2H)
+            neigh_scores = self.neighbor_att_mlp(att_input).squeeze(-1)  # (L, N)
+
+            # All-zero neighbour rows are padding. Mirrors ComputeMasking.
+            with torch.no_grad():
+                mask = (neighbor_embeddings.abs().sum(dim=-1) > 0).to(neigh_scores.dtype)
+            neigh_scores = neigh_scores + (1.0 - mask) * (-1e4)
+            neigh_att = F.softmax(neigh_scores, dim=-1)  # (L, N)
+            agg_neigh = (neigh_att.unsqueeze(-1) * neigh_proj).sum(dim=1)  # (L, H)
+            hist_with_neigh = torch.cat([agg_neigh, hist_item_emb], dim=-1)
+            hist_repr = self.history_with_neighbors(hist_with_neigh)  # (L, H)
+        else:
+            hist_repr = hist_item_emb  # (L, H)
+
+        u_expanded = u_base.unsqueeze(0).expand(history_item_ids.size(0), -1)
+        hist_att_input = torch.cat([u_expanded, hist_repr], dim=-1)  # (L, 2H)
+        hist_scores = self.history_att_mlp(hist_att_input).squeeze(-1)  # (L,)
+
+        # Padded history positions use item id 0.
+        with torch.no_grad():
+            hist_mask = (history_item_ids != 0).to(hist_scores.dtype)
+        hist_scores = hist_scores + (1.0 - hist_mask) * (-1e4)
+        hist_att = F.softmax(hist_scores, dim=-1)  # (L,)
+        u_hist = (hist_att.unsqueeze(-1) * hist_repr).sum(dim=0)  # (H,)
+        return self.user_final_proj(torch.cat([u_hist, u_base], dim=-1))
+
+    def score(self, user_repr: torch.Tensor, item_ids: torch.Tensor) -> torch.Tensor:
+        """Inner product of one user hidden state with target item embeddings.
+
+        Parameters
+        ----------
+        user_repr : torch.Tensor
+            Output of ``user_representation``, shape ``(H,)`` or ``(1, H)``.
+        item_ids : torch.Tensor
+            Target item ids, shape ``(B,)``, dtype int64.
+
+        Returns
+        -------
+        torch.Tensor
+            Unbounded scores, shape ``(B,)``. Higher is better.
+
+        Raises
+        ------
+        ValueError
+            If ``item_ids`` is not a vector, or ``user_repr`` does not
+            contain ``hidden_dim`` elements.
+
+        Examples
+        --------
+        >>> m = FedPerGNNModel(num_items=5, hidden_dim=4, history_len=2, neighbor_len=1)
+        >>> h = m.user_representation(torch.tensor([1, 2]), torch.zeros(4))
+        >>> m.score(h, torch.tensor([1, 3])).shape
+        torch.Size([2])
+        """
+        if item_ids.dim() != 1:
+            raise ValueError(
+                "item_ids must have shape (B,); "
+                f"got {tuple(item_ids.shape)}"
+            )
+        u = user_repr.reshape(-1)
+        if u.numel() != self.hidden_dim:
+            raise ValueError(
+                f"user_repr must have {self.hidden_dim} elements; "
+                f"got shape {tuple(user_repr.shape)}"
+            )
+        item_emb = self.item_embeddings(item_ids)  # (B, H)
+        return (item_emb * u).sum(dim=-1)
+
     def forward(
         self,
         item_ids: torch.Tensor,
@@ -156,102 +304,42 @@ class FedPerGNNModel(nn.Module):
         user_embedding: torch.Tensor,
         neighbor_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Score each target item against this user's GAT hidden state.
+        """Score target items for one user.
 
-        History and neighbour tensors may be repeated across the batch;
-        they must not depend on the target id. The returned scores are
-        unbounded inner products (higher is better).
+        The user tower runs once. Each target id contributes only its
+        item embedding to the inner product.
 
         Parameters
         ----------
         item_ids : torch.Tensor
             Target item ids, shape ``(B,)``, dtype int64.
         history_item_ids : torch.Tensor
-            Padded history ids, shape ``(B, L)``, dtype int64.
+            Padded history ids, shape ``(L,)``, dtype int64.
         user_embedding : torch.Tensor
             Client-resident owner row, shape ``(H,)`` or ``(1, H)``.
         neighbor_embeddings : torch.Tensor or None, optional
-            Neighbour rows, shape ``(B, L, N, H)``. ``None`` skips the
+            Neighbour rows, shape ``(L, N, H)``. ``None`` skips the
             neighbour GAT and uses projected history items only.
 
         Returns
         -------
         torch.Tensor
-            Scores of shape ``(B,)``.
+            Unbounded scores, shape ``(B,)``. Higher is better.
+
+        Raises
+        ------
+        ValueError
+            If a tensor rank or width does not match
+            ``user_representation`` or ``score``.
 
         Examples
         --------
         >>> m = FedPerGNNModel(num_items=5, hidden_dim=4, history_len=2, neighbor_len=1)
-        >>> items = torch.tensor([1, 2])
-        >>> hist = torch.tensor([[1, 2], [1, 2]])
-        >>> m(items, hist, torch.zeros(4)).shape
+        >>> m(torch.tensor([1, 2]), torch.tensor([1, 2]), torch.zeros(4)).shape
         torch.Size([2])
         """
-        batch_size = item_ids.size(0)
-
-        # Target items
-        item_emb = self.item_embeddings(item_ids)  # (B, H)
-
-        # History items
-        hist_item_emb = self.item_embeddings(history_item_ids)  # (B, L, H)
-        hist_item_emb = torch.sigmoid(self.history_item_proj(hist_item_emb))  # (B, L, H)
-
-        u_base = user_embedding.reshape(-1).unsqueeze(0).expand(batch_size, -1)
-
-        if neighbor_embeddings is not None:
-            # neighbor_embeddings: (B, L, N, H)
-            # Project neighbors
-            neigh_proj = self.neighbor_proj(neighbor_embeddings)  # (B, L, N, H)
-
-            # Expand hist_item_emb to match neighbor dimension
-            hist_expanded = hist_item_emb.unsqueeze(2).expand(-1, -1, self.neighbor_len, -1)  # (B, L, N, H)
-
-            # Concatenate along last dim -> (B, L, N, 2H)
-            att_input = torch.cat([hist_expanded, neigh_proj], dim=-1)
-
-            # Compute unnormalized attention scores over neighbors
-            neigh_scores = self.neighbor_att_mlp(att_input).squeeze(-1)  # (B, L, N)
-
-            # Mask out neighbors whose embeddings are all zeros (padding).
-            # This mirrors the original ComputeMasking(+(-99)) behaviour.
-            with torch.no_grad():
-                mask = (neighbor_embeddings.abs().sum(dim=-1) > 0).to(neigh_scores.dtype)  # (B, L, N)
-            neigh_scores = neigh_scores + (1.0 - mask) * (-1e4)
-
-            neigh_att = F.softmax(neigh_scores, dim=-1)  # (B, L, N)
-
-            # Weighted sum over neighbors
-            neigh_att_exp = neigh_att.unsqueeze(-1)  # (B, L, N, 1)
-            agg_neigh = (neigh_att_exp * neigh_proj).sum(dim=2)  # (B, L, H)
-
-            # Combine aggregated neighbor embedding with history item embedding
-            hist_with_neigh = torch.cat([agg_neigh, hist_item_emb], dim=-1)  # (B, L, 2H)
-            hist_repr = self.history_with_neighbors(hist_with_neigh)  # (B, L, H)
-        else:
-            # No neighbors: just use projected history item embeddings
-            hist_repr = hist_item_emb  # (B, L, H)
-
-        # Repeat user embedding over history length
-        u_expanded = u_base.unsqueeze(1).expand(-1, self.history_len, -1)  # (B, L, H)
-
-        hist_att_input = torch.cat([u_expanded, hist_repr], dim=-1)  # (B, L, 2H)
-        hist_scores = self.history_att_mlp(hist_att_input).squeeze(-1)  # (B, L)
-
-        # Mask padded history positions where item id == 0
-        with torch.no_grad():
-            hist_mask = (history_item_ids != 0).to(hist_scores.dtype)  # (B, L)
-        hist_scores = hist_scores + (1.0 - hist_mask) * (-1e4)
-
-        hist_att = F.softmax(hist_scores, dim=-1)  # (B, L)
-
-        # Aggregate history representations
-        hist_att_exp = hist_att.unsqueeze(-1)  # (B, L, 1)
-        u_hist = (hist_att_exp * hist_repr).sum(dim=1)  # (B, H)
-
-        # Combine with base user embedding
-        u_final = self.user_final_proj(torch.cat([u_hist, u_base], dim=-1))  # (B, H)
-
-        # SI predictor ŷ = h_u · e_i. A linear layer on the concat is
-        # additive: ranking inside a user ignores h_u.
-        return (u_final * item_emb).sum(dim=-1)
+        user_repr = self.user_representation(
+            history_item_ids, user_embedding, neighbor_embeddings
+        )
+        return self.score(user_repr, item_ids)
 

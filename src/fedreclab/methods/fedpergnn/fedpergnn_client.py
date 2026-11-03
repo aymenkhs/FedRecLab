@@ -264,6 +264,13 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         history_items_np = expanded_for_client.get("history_item_ids")
         neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
         neighbor_user_ids_np = expanded_for_client.get("neighbor_user_ids")
+        hist_items = torch.as_tensor(history_items_np, dtype=torch.long, device=device)
+        if neighbor_emb_np is not None:
+            neighbor_emb = torch.as_tensor(
+                neighbor_emb_np, dtype=torch.float32, device=device
+            )
+        else:
+            neighbor_emb = None
 
         sum_emb: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
         sum_grad: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
@@ -318,42 +325,35 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                     labels_np_shuffled[start:end], dtype=torch.float32, device=device
                 )
 
-                b_hist_items = torch.as_tensor(
-                    np.repeat(history_items_np[None, :], repeats=b_item_ids.size(0), axis=0),
-                    dtype=torch.long,
-                    device=device,
-                )
-
-                if neighbor_emb_np is not None:
-                    b_neighbor_emb = torch.as_tensor(
-                        np.repeat(neighbor_emb_np[None, :, :, :], repeats=b_item_ids.size(0), axis=0),
-                        dtype=torch.float32,
-                        device=device,
-                    )
-                    if self.neighbor_embeddings_trainable:
-                        b_neighbor_emb.requires_grad_(True)
+                if neighbor_emb is not None and self.neighbor_embeddings_trainable:
+                    b_neighbor_emb = neighbor_emb.detach().requires_grad_(True)
                 else:
-                    b_neighbor_emb = None
+                    b_neighbor_emb = neighbor_emb
 
+                # History and neighbours do not depend on the target item.
+                # One user state is shared by every row; mean loss sends
+                # the batch-mean gradient back through that state.
                 optimizer.zero_grad()
-                preds = model(
-                    item_ids=b_item_ids,
-                    history_item_ids=b_hist_items,
+                user_repr = model.user_representation(
+                    history_item_ids=hist_items,
                     user_embedding=user_emb,
                     neighbor_embeddings=b_neighbor_emb,
                 )
+                preds = model.score(user_repr, b_item_ids)
                 loss = self._compute_loss(preds, b_labels)
                 loss.backward()
 
                 if self.neighbor_embeddings_trainable and b_neighbor_emb is not None and b_neighbor_emb.grad is not None and neighbor_user_ids_np is not None:
                     grad_np = b_neighbor_emb.grad.detach().cpu().numpy()
-                    B, L, N, H = grad_np.shape
-                    for ell in range(L):
-                        for n in range(N):
+                    batch_count = int(b_item_ids.size(0))
+                    for ell in range(grad_np.shape[0]):
+                        for n in range(grad_np.shape[1]):
                             uid = int(neighbor_user_ids_np[ell, n])
                             if uid >= 0:
-                                sum_grad[uid] += grad_np[:, ell, n, :].sum(axis=0)
-                                count_grad[uid] += B
+                                # grad_np is the mean over this batch. The
+                                # upload divides by the number of examples.
+                                sum_grad[uid] += grad_np[ell, n, :]
+                                count_grad[uid] += batch_count
 
                 optimizer.step()
 
@@ -1057,8 +1057,10 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
         See ``BaseClientAlgorithm.compute_scores`` for the ranking-evaluation
         contract. This method returns scores only; it does not compute a
-        validation loss. Both tasks return unbounded inner products, which
-        ``FullRankingEvaluator`` ranks as higher-is-better.
+        validation loss.         Both tasks return unbounded inner products, which
+        ``FullRankingEvaluator`` ranks as higher-is-better. The user
+        tower is evaluated once for the client and reused for every
+        candidate.
 
         Parameters
         ----------
@@ -1106,33 +1108,27 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         neighbor_emb_np = expanded_for_client.get("neighbor_embeddings")
 
         scores: Dict[int, np.ndarray] = {}
+        if not candidate_items_per_user:
+            return scores
 
         with torch.no_grad():
+            hist_items = torch.as_tensor(
+                history_items_np, dtype=torch.long, device=device
+            )
+            if neighbor_emb_np is not None:
+                neigh = torch.as_tensor(
+                    neighbor_emb_np, dtype=torch.float32, device=device
+                )
+            else:
+                neigh = None
+            user_repr = model.user_representation(
+                history_item_ids=hist_items,
+                user_embedding=user_emb,
+                neighbor_embeddings=neigh,
+            )
             for user_id, cand_items in candidate_items_per_user.items():
-                b = len(cand_items)
                 item_ids = torch.as_tensor(cand_items, dtype=torch.long, device=device)
-                hist_items = torch.as_tensor(
-                    np.repeat(history_items_np[None, :], repeats=b, axis=0),
-                    dtype=torch.long,
-                    device=device,
-                )
-
-                if neighbor_emb_np is not None:
-                    neigh = torch.as_tensor(
-                        np.repeat(neighbor_emb_np[None, :, :, :], repeats=b, axis=0),
-                        dtype=torch.float32,
-                        device=device,
-                    )
-                else:
-                    neigh = None
-
-                preds = model(
-                    item_ids=item_ids,
-                    history_item_ids=hist_items,
-                    user_embedding=user_emb,
-                    neighbor_embeddings=neigh,
-                )
-                scores[user_id] = preds.cpu().numpy()
+                scores[user_id] = model.score(user_repr, item_ids).cpu().numpy()
 
         return scores
 

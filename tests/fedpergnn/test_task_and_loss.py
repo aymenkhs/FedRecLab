@@ -104,3 +104,88 @@ def test_local_train_records_task_and_ranking_evaluator_scores(
     )
     assert scores[0].shape == (3,)
     assert np.isfinite(scores[0]).all()
+
+
+def test_user_tower_runs_once_per_batch_and_once_per_score_call(
+    fedpergnn_client_and_request, monkeypatch
+):
+    """Training and scoring must not rebuild the user tower per item.
+
+    Two local rows share one batch, and five candidates share one score
+    call. Each of those steps encodes the user once.
+
+    Parameters
+    ----------
+    fedpergnn_client_and_request : callable
+        Fixture factory for one client and its training request.
+    monkeypatch : pytest.MonkeyPatch
+        Replaces ``user_representation`` with a counter.
+
+    Raises
+    ------
+    AssertionError
+        If the tower runs more than once in training or in scoring.
+    """
+    client, request = fedpergnn_client_and_request()
+    calls = {"n": 0}
+    original = client._skeleton.user_representation
+
+    def wrapped(*args, **kwargs):
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(client._skeleton, "user_representation", wrapped)
+    client.local_train(request)
+    assert calls["n"] == 1
+
+    calls["n"] = 0
+    scores = client.compute_scores(
+        client_id=0,
+        candidate_items_per_user={0: np.array([1, 2, 3, 4, 5])},
+        global_parameters=request.global_payload,
+        client_state=request.client_state,
+        extra_payload=request.extra_payload,
+    )
+    assert calls["n"] == 1
+    assert scores[0].shape == (5,)
+
+
+def test_trainable_neighbour_row_is_uploaded_from_the_shared_tower(
+    fedpergnn_client_and_request,
+):
+    """A neighbour gradient from one shared user state is uploaded.
+
+    The expansion has a single real neighbour row. After one local step
+    that row must appear in the user-embedding upload and must have moved.
+
+    Parameters
+    ----------
+    fedpergnn_client_and_request : callable
+        Fixture factory for one client and its training request.
+
+    Raises
+    ------
+    AssertionError
+        If the neighbour id is missing or its uploaded vector is unchanged.
+    """
+    client, request = fedpergnn_client_and_request(
+        neighbor_embeddings_trainable=True
+    )
+    hidden = client.hidden_dim
+    expansion = request.extra_payload["expanded_user_data"][0]
+    history_len, neighbor_len, _ = expansion["neighbor_embeddings"].shape
+    embeddings = np.zeros((history_len, neighbor_len, hidden), dtype=np.float32)
+    embeddings[0, 0] = np.linspace(0.1, 0.8, hidden, dtype=np.float32)
+    neighbor_ids = np.full((history_len, neighbor_len), -1, dtype=np.int64)
+    neighbor_ids[0, 0] = 4
+    expansion["neighbor_embeddings"] = embeddings
+    expansion["neighbor_user_ids"] = neighbor_ids
+
+    response = client.local_train(request)
+    upload = response.updates_packages["user_embeddings"].param_value
+    rows = [int(row) for row in upload["rows"]]
+    assert 4 in rows
+    updated = upload["values"][rows.index(4)]
+    assert updated.shape == (hidden,)
+    assert np.isfinite(updated).all()
+    assert not np.allclose(updated, embeddings[0, 0])
