@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from src.fedreclab.data.metric import (
-    # BiasMetrics,
+    BiasMetrics,
     CategoryMatrix,
     beyond_parity_metrics,
     category_user_metrics,
@@ -375,247 +375,75 @@ class TestUGF:
 # # =====================================================================
 # # Calibration
 # # =====================================================================
-# class TestCalibration:
-#     def test_hand_computed_mean(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED)
-#         expected = [
-#             kl([0.5, 0.5, 0], [0.5, 0.5, 0]),
-#             kl([1, 0, 0], [0.25, 0.25, 0.5]),
-#             kl([0.5, 1 / 6, 1 / 3], [0.5, 0.5, 0]),
-#             kl([0.375, 0.375, 0.25], [0.25, 0.25, 0.5]),
-#         ]
-#         assert s["calib_kl@2"] == pytest.approx(np.mean(expected))
-#         assert expected[0] == pytest.approx(0.0)
+class TestCalibration:
+    def test_hand_computed_mean(self, train):
+        s, _ = make_bm(train).compute(RANK_MIXED)
+        #the catagory dist for train and recolists(topk)
+        expected = [
+            kl([0.5, 0.5, 0], [0.5, 0.5, 0]),
+            kl([1, 0, 0], [0.25, 0.25, 0.5]),
+            kl([0.5, 1 / 6, 1 / 3], [0.5, 0.5, 0]),
+            kl([0.375, 0.375, 0.25], [0.25, 0.25, 0.5]),
+        ]
+        assert s["calib_kl@2"] == pytest.approx(np.mean(expected))
+        assert expected[0] == pytest.approx(0.0)
 
-#     def test_group_gap(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED)
-#         e = [
-#             kl([0.5, 0.5, 0], [0.5, 0.5, 0]),
-#             kl([1, 0, 0], [0.25, 0.25, 0.5]),
-#             kl([0.5, 1 / 6, 1 / 3], [0.5, 0.5, 0]),
-#             kl([0.375, 0.375, 0.25], [0.25, 0.25, 0.5]),
-#         ]
-#         assert s["calib_kl_gap@2"] == pytest.approx(abs(np.mean(e[:2]) - np.mean(e[2:])))
+    def test_group_gap(self, train):
+        s, _ = make_bm(train).compute(RANK_MIXED)
+        e = [
+            kl([0.5, 0.5, 0], [0.5, 0.5, 0]),
+            kl([1, 0, 0], [0.25, 0.25, 0.5]),
+            kl([0.5, 1 / 6, 1 / 3], [0.5, 0.5, 0]),
+            kl([0.375, 0.375, 0.25], [0.25, 0.25, 0.5]),
+        ]
+        assert s["calib_kl_gap@2"] == pytest.approx(abs(np.mean(e[:2]) - np.mean(e[2:])))
 
-#     def test_perfectly_calibrated_is_zero(self):
-#         tr = pd.DataFrame({"user_id": [0, 0], "item_id": [0, 1]})
-#         bm = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2])
-#         s, _ = bm.compute({0: np.array([0, 1, 2, 3])})
-#         assert s["calib_kl@2"] == pytest.approx(0.0, abs=1e-12)
+    def test_perfectly_calibrated_is_zero(self):
+        tr = pd.DataFrame({"user_id": [0, 0], "item_id": [0, 1]})
+        bm = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2])
+        s, _ = bm.compute({0: np.array([0, 1, 2, 3])})
+        assert s["calib_kl@2"] == pytest.approx(0.0, abs=1e-12)
 
-#     def test_missing_category_in_recs_is_finite_thanks_to_smoothing(self):
-#         tr = pd.DataFrame({"user_id": [0], "item_id": [3]})  # profile = category c
-#         bm = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2])
-#         s, _ = bm.compute({0: np.array([0, 1])})  # recs contain no c
-#         assert s["calib_kl@2"] == pytest.approx(-math.log(0.01))
+    def test_missing_category_in_recs_is_finite_thanks_to_smoothing(self):
+        tr = pd.DataFrame({"user_id": [0], "item_id": [3]})  # profile = category c
+        bm = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2])
+        s, _ = bm.compute({0: np.array([0, 1])})  # recs contain no c
+        assert s["calib_kl@2"] == pytest.approx(-math.log(0.01))
 
-#     def test_alpha_parameter(self):
-#         tr = pd.DataFrame({"user_id": [0], "item_id": [3]})
-#         bm = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2], calibration_alpha=0.1)
-#         s, _ = bm.compute({0: np.array([0, 1])})
-#         assert s["calib_kl@2"] == pytest.approx(-math.log(0.1))
+    def test_alpha_parameter(self):
+        tr = pd.DataFrame({"user_id": [0], "item_id": [3]})
+        bm = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2], calibration_alpha=0.1)
+        s, _ = bm.compute({0: np.array([0, 1])})
+        assert s["calib_kl@2"] == pytest.approx(-math.log(0.1))
 
-#     def test_rank_discount(self):
-#         tr = pd.DataFrame({"user_id": [0], "item_id": [0]})  # p = [1,0,0]
-#         w = np.array([1.0, 1 / math.log2(3)])
-#         q = w[0] * np.array([0, 0, 1]) + w[1] * np.array([0.5, 0.5, 0])
-#         q = q / q.sum()
-#         bm = BiasMetrics(
-#             tr, CATALOG, item_categories=CATS, topk=[2], calibration_rank_discount=True
-#         )
-#         s, _ = bm.compute({0: np.array([3, 2])})
-#         assert s["calib_kl@2"] == pytest.approx(kl([1, 0, 0], q))
-#         plain = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2])
-#         s2, _ = plain.compute({0: np.array([3, 2])})
-#         assert s["calib_kl@2"] != pytest.approx(s2["calib_kl@2"])
+    def test_rank_discount(self):
+        tr = pd.DataFrame({"user_id": [0], "item_id": [0]})  # p = [1,0,0]
+        w = np.array([1.0, 1 / math.log2(3)])
+        q = w[0] * np.array([0, 0, 1]) + w[1] * np.array([0.5, 0.5, 0])
+        q = q / q.sum()
+        bm = BiasMetrics(
+            tr, CATALOG, item_categories=CATS, topk=[2], calibration_rank_discount=True
+        )
+        s, _ = bm.compute({0: np.array([3, 2])})
+        assert s["calib_kl@2"] == pytest.approx(kl([1, 0, 0], q))
+        plain = BiasMetrics(tr, CATALOG, item_categories=CATS, topk=[2])
+        s2, _ = plain.compute({0: np.array([3, 2])})
+        assert s["calib_kl@2"] != pytest.approx(s2["calib_kl@2"])
 
-#     def test_non_negative(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED)
-#         assert s["calib_kl@2"] >= 0
+    def test_non_negative(self, train):
+        s, _ = make_bm(train).compute(RANK_MIXED)
+        assert s["calib_kl@2"] >= 0
 
-#     def test_user_without_profile_skipped(self, train):
-#         rk = {**RANK_MIXED, 99: np.array([0, 1])}
-#         s, _ = make_bm(train).compute(rk)
-#         s0, _ = make_bm(train).compute(RANK_MIXED)
-#         assert s["calib_kl@2"] == pytest.approx(s0["calib_kl@2"])
+    def test_user_without_profile_skipped(self, train):
+        rk = {**RANK_MIXED, 99: np.array([0, 1])}
+        s, _ = make_bm(train).compute(rk)
+        s0, _ = make_bm(train).compute(RANK_MIXED)
+        assert s["calib_kl@2"] == pytest.approx(s0["calib_kl@2"])
 
-#     def test_profile_without_categorised_items_skipped(self):
-#         cats = {0: ["action"]}
-#         tr = pd.DataFrame({"user_id": [0], "item_id": [3]})  # item 3 uncategorised
-#         bm = BiasMetrics(tr, CATALOG, item_categories=cats, topk=[2])
-#         s, _ = bm.compute({0: np.array([0, 1])})
-#         assert "calib_kl@2" not in s
+    def test_profile_without_categorised_items_skipped(self):
+        cats = {0: ["action"]}
+        tr = pd.DataFrame({"user_id": [0], "item_id": [3]})  # item 3 uncategorised
+        bm = BiasMetrics(tr, CATALOG, item_categories=cats, topk=[2])
+        s, _ = bm.compute({0: np.array([0, 1])})
+        assert "calib_kl@2" not in s
 
-
-# # =====================================================================
-# # Popularity bias
-# # =====================================================================
-# class TestPopularity:
-#     def test_buckets_and_groups(self, train):
-#         bm = make_bm(train)
-#         np.testing.assert_array_equal(bm._bucket, [0, 1, 1, 2])
-#         np.testing.assert_allclose(bm._phi, [1.0, 0.5, 0.5, 0.5])
-#         assert bm.pop_group == {1: "blockbuster", 0: "diverse", 2: "diverse", 3: "niche"}
-#         assert bm.profile_pop[0] == pytest.approx(0.75)
-#         assert bm.profile_pop[2] == pytest.approx(2 / 3)
-
-#     def test_delta_gap_hand_computed(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED)
-#         assert s["gap_delta_blockbuster@2"] == pytest.approx(-0.5)
-#         assert s["gap_delta_niche@2"] == pytest.approx(-0.2)
-#         prof = (0.75 + 2 / 3) / 2
-#         assert s["gap_delta_diverse@2"] == pytest.approx((0.75 - prof) / prof)
-
-#     def test_exposure_and_coverage(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED)
-#         assert s["avg_rec_popularity@2"] == pytest.approx(0.625)
-#         assert s["head_exposure@2"] == pytest.approx(0.25)
-#         assert s["mid_exposure@2"] == pytest.approx(0.5)
-#         assert s["tail_exposure@2"] == pytest.approx(0.25)
-#         assert s["item_coverage@2"] == pytest.approx(1.0)
-
-#     def test_exposure_shares_sum_to_one(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED)
-#         total = sum(s[f"{b}_exposure@2"] for b in ("head", "mid", "tail"))
-#         assert total == pytest.approx(1.0)
-
-#     def test_details_table(self, train):
-#         _, d = make_bm(train).compute(RANK_MIXED)
-#         t = d["popularity@2"]
-#         assert set(t.index) == {"blockbuster", "diverse", "niche"}
-#         assert t.loc["blockbuster", "gap_profile"] == pytest.approx(1.0)
-#         assert t.loc["blockbuster", "gap_rec"] == pytest.approx(0.5)
-
-#     def test_coverage_partial(self, train):
-#         rk = {u: np.array([0, 1, 2, 3]) for u in range(4)}
-#         s, _ = make_bm(train, topk=[1]).compute(rk)
-#         assert s["item_coverage@1"] == pytest.approx(0.25)
-
-#     def test_multiple_k_keys(self, train):
-#         s, _ = make_bm(train, topk=[1, 2]).compute(RANK_MIXED)
-#         assert "gap_delta_niche@1" in s and "gap_delta_niche@2" in s
-
-#     def test_user_without_profile_skipped(self, train):
-#         rk = {**RANK_MIXED, 99: np.array([3, 3])}
-#         s, _ = make_bm(train).compute(rk)
-#         assert s["avg_rec_popularity@2"] == pytest.approx(0.625)
-
-#     def test_head_tail_share_validation(self, train):
-#         with pytest.raises(ValueError):
-#             make_bm(train, head_share=0.6, tail_share=0.4)
-
-#     def test_head_never_empty_and_disjoint_from_tail(self, train):
-#         bm = make_bm(train, head_share=0.01, tail_share=0.01)
-#         assert (bm._bucket == 0).sum() >= 1
-#         assert (bm._bucket == 2).sum() >= 1
-
-#     def test_zero_count_catalogue_items_are_tail(self):
-#         tr = pd.DataFrame({"user_id": [0, 1], "item_id": [0, 0]})
-#         bm = BiasMetrics(tr, [0, 1, 2], topk=[1])
-#         assert bm._bucket[0] == 0
-#         assert bm._bucket[1] == 2 and bm._bucket[2] == 2
-
-
-# # =====================================================================
-# # Constructor / plumbing
-# # =====================================================================
-# class TestPlumbing:
-#     def test_int_topk_normalised(self, train):
-#         assert make_bm(train, topk=5).topk == [5]
-
-#     def test_three_labels_requires_protected_groups(self, train):
-#         groups = {0: "action", 1: "romance", 2: "comedy", 3: "action"}
-#         with pytest.raises(ValueError):
-#             make_bm(train, user_groups=groups)
-#         bm = make_bm(train, user_groups=groups, protected_groups=("action", "romance"))
-#         assert bm.group_pair == ("action", "romance")
-
-#     def test_two_labels_inferred(self, train):
-#         assert make_bm(train).group_pair == ("f", "m")
-
-#     def test_max_rank_len(self):
-#         tr = pd.DataFrame({"user_id": [0], "item_id": [0]})
-#         cats = {i: ["action"] for i in range(10)}
-#         bm = BiasMetrics(tr, np.arange(10), item_categories=cats, topk=[2])
-#         assert bm.max_rank_len == 10  # floor(total mass)=10 > k
-#         bm = BiasMetrics(tr, np.arange(10), item_categories=cats, topk=[2], compute_crp=False)
-#         assert bm.max_rank_len == 2
-#         bm = BiasMetrics(tr, np.arange(10), topk=[2, 7])
-#         assert bm.max_rank_len == 7
-
-#     def test_empty_rankings(self, train):
-#         s, d = make_bm(train).compute({})
-#         assert s == {} and d == {}
-
-#     def test_duplicate_train_rows_do_not_inflate_popularity(self, train):
-#         dup = pd.concat([train, train])
-#         a, b = make_bm(train), make_bm(dup)
-#         np.testing.assert_allclose(a._phi, b._phi)
-
-#     def test_custom_column_names(self, train):
-#         tr = train.rename(columns={"user_id": "u", "item_id": "i"})
-#         bm = make_bm(tr, user_col="u", item_col="i")
-#         assert bm.advantaged == {3}
-
-#     def test_rankings_accept_lists_not_only_arrays(self, train):
-#         rk = {u: list(v) for u, v in RANK_SPLIT.items()}
-#         s, _ = make_bm(train).compute(rk)
-#         assert s["gbs_cc@2"] == pytest.approx(1.5)
-
-
-# # =====================================================================
-# # Randomised sanity / invariants
-# # =====================================================================
-# class TestRandomised:
-#     @pytest.mark.parametrize("seed", [0, 1, 2])
-#     def test_invariants(self, seed):
-#         rng = np.random.default_rng(seed)
-#         n_u, n_i = 80, 60
-#         tr = pd.DataFrame(
-#             {"user_id": rng.integers(0, n_u, 900), "item_id": rng.integers(0, n_i, 900)}
-#         )
-#         cats = {
-#             i: list(rng.choice(list("abcd"), size=rng.integers(1, 3), replace=False))
-#             for i in range(n_i)
-#         }
-#         groups = {u: ("m" if u % 2 else "f") for u in range(n_u)}
-#         bm = BiasMetrics(tr, np.arange(n_i), item_categories=cats, user_groups=groups, topk=[5, 10])
-#         rk = {u: rng.permutation(n_i)[: bm.max_rank_len] for u in range(n_u)}
-#         pum = {u: {"ndcg@5": rng.random(), "ndcg@10": rng.random()} for u in range(n_u)}
-#         pairs = pd.DataFrame(
-#             {
-#                 "user_id": rng.integers(0, n_u, 500),
-#                 "item_id": rng.integers(0, n_i, 500),
-#                 "pred": rng.random(500) * 5,
-#                 "rating": rng.integers(1, 6, 500).astype(float),
-#             }
-#         )
-#         s, d = bm.compute(rk, pum, pairs)
-
-#         assert s, "no metrics returned"
-#         for k, v in s.items():
-#             assert np.isfinite(v), k
-#         for k, v in s.items():
-#             if k.startswith(("gbs_", "calib_kl", "ugf_", "group_gap_", "bp_")):
-#                 assert v >= 0, k
-#             if k.startswith(("head_exposure", "mid_exposure", "tail_exposure", "item_coverage")):
-#                 assert 0 <= v <= 1, k
-#         for kk in (5, 10):
-#             tot = sum(s[f"{b}_exposure@{kk}"] for b in ("head", "mid", "tail"))
-#             assert tot == pytest.approx(1.0)
-#         assert d["category/cc@5"]["all"].sum() == pytest.approx(1.0)  # every item categorised
-
-#     def test_permuting_user_order_does_not_change_results(self):
-#         rng = np.random.default_rng(7)
-#         n_u, n_i = 30, 25
-#         tr = pd.DataFrame(
-#             {"user_id": rng.integers(0, n_u, 300), "item_id": rng.integers(0, n_i, 300)}
-#         )
-#         cats = {i: [str(i % 3)] for i in range(n_i)}
-#         groups = {u: u % 2 for u in range(n_u)}
-#         bm = BiasMetrics(tr, np.arange(n_i), item_categories=cats, user_groups=groups, topk=[5])
-#         rk = {u: rng.permutation(n_i) for u in range(n_u)}
-#         s1, _ = bm.compute(rk)
-#         s2, _ = bm.compute(dict(reversed(list(rk.items()))))
-#         for k in s1:
-#             assert s1[k] == pytest.approx(s2[k])

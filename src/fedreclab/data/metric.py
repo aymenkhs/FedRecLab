@@ -13,9 +13,7 @@ Families implemented
    
 4. Calibration (Steck, RecSys'18): KL(p(c|u) || (1-alpha) q(c|u) + alpha p(c|u)). https://dl.acm.org/doi/10.1145/3240323.3240372
 
-5. Popularity bias (Abdollahpouri et al., 2019): GAP / delta-GAP per user group,
-   head/mid/tail exposure, average recommended popularity, item coverage. https://arxiv.org/abs/1907.13286
- 
+
 """
 from __future__ import annotations
  
@@ -363,32 +361,4 @@ class BiasMetrics:
             if masks:
                 scalars[f"group_gap_{name}"] = float(abs(v[masks[0]].mean() - v[masks[1]].mean()))
  
-    # ----------------------------------------------------------- popularity
-    def _popularity_block(self, rankings, scalars, details):
-        for k in self.topk:
-            rows, recommended = [], set()
-            for u, ranked in rankings.items():
-                grp = self.pop_group.get(u)
-                top = np.asarray(ranked)[:k]
-                idx = self.catalog.get_indexer(top)
-                idx = idx[idx >= 0]
-                if grp is None or len(idx) == 0:
-                    continue
-                recommended.update(idx.tolist())
-                share = np.bincount(self._bucket[idx], minlength=3) / len(idx)
-                rows.append((u, grp, self.profile_pop[u], self._phi[idx].mean(), *share))
-            if not rows:
-                continue
-            df = pd.DataFrame(
-                rows, columns=["user", "group", "gap_profile", "gap_rec", "head", "mid", "tail"]
-            )
-            by = df.groupby("group")[["gap_profile", "gap_rec", "head", "mid", "tail"]].mean()
-            by["delta_gap"] = _safe_div(by["gap_rec"] - by["gap_profile"], by["gap_profile"])
-            details[f"popularity@{k}"] = by
-            for grp, r in by.iterrows():
-                scalars[f"gap_delta_{grp}@{k}"] = float(r["delta_gap"])
-            scalars[f"avg_rec_popularity@{k}"] = float(df["gap_rec"].mean())
-            for b in ("head", "mid", "tail"):
-                scalars[f"{b}_exposure@{k}"] = float(df[b].mean())
-            scalars[f"item_coverage@{k}"] = len(recommended) / len(self.catalog)
- 
+   
