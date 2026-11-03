@@ -200,7 +200,7 @@ def test_compute_scores_is_ego_dot_product(make_server):
 def test_validation_edge_is_not_a_graph_edge(make_server, make_tiny_dataset):
     import pandas as pd
 
-    from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
+    from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
     from src.fedreclab.data.dataset import InteractionDataset
     from src.fedreclab.data.split import RatioSplitStrategy
 
@@ -227,7 +227,7 @@ def test_validation_edge_is_not_a_graph_edge(make_server, make_tiny_dataset):
         splitting_strategy=RatioSplitStrategy(
             include_validation=True, include_test=False
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         include_validation=True,
         include_test=False,

@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
+from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
 from src.fedreclab.data.dataset import InteractionDataset
 from src.fedreclab.data.load_data import load_dataframe_dataset
 from src.fedreclab.data.split import RatioSplitStrategy
@@ -26,7 +26,7 @@ def test_load_dataframe_k_core_zero_rating_filter_uses_positions():
         splitting_strategy=RatioSplitStrategy(
             include_validation=False, include_test=False
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         rating_exclusion_threshold=3.0,
         time_col=None,
@@ -59,7 +59,7 @@ def test_load_dataframe_k_core_zero_rating_filter_ratio_split():
             test_size=0.2,
             seed=42,
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         include_validation=True,
         include_test=True,
         k_core=0,
@@ -90,7 +90,7 @@ def test_splits_included_reads_positions_from_noncontiguous_index():
         splitting_strategy=RatioSplitStrategy(
             include_validation=False, include_test=True
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         include_test=True,
         splits_included=True,
@@ -117,7 +117,7 @@ def test_split_data_labels_match_positional_indices_on_permuted_index():
         splitting_strategy=RatioSplitStrategy(
             include_validation=False, include_test=True, test_size=0.3, seed=0
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         include_test=True,
         time_col=None,
@@ -149,7 +149,7 @@ def _interaction_dataset(df, **kwargs):
     )
     kwargs.setdefault(
         "client_partitioning_strategy",
-        CrossDeviceSplittingStrategy(),
+        CrossDevicePartitionStrategy(),
     )
     kwargs.setdefault("time_col", None)
     return InteractionDataset(interaction_data=df, **kwargs)
@@ -295,7 +295,7 @@ def test_load_dataframe_forwards_filters():
         splitting_strategy=RatioSplitStrategy(
             include_validation=False, include_test=False
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=2,
         min_user_interactions=2,
         min_item_interactions=2,

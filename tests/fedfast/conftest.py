@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
+from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
 from src.fedreclab.data.dataset import InteractionDataset
 from src.fedreclab.data.split import RatioSplitStrategy
 from src.fedreclab.federated.base_client import ClientStateBase, ClientTrainingRequest
@@ -89,7 +89,7 @@ def make_fedfast_dataset(n_clients: int = 4):
         splitting_strategy=RatioSplitStrategy(
             include_validation=False, include_test=False
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         include_validation=False,
         include_test=False,

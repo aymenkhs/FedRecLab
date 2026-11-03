@@ -323,7 +323,7 @@ class FedPerGNN(BaseFederatedServer):
         num_clients = self.num_clients
 
         for client_id in range(num_clients):
-            # Determine the (single) user id for this client (CrossDevice splitting)
+            # Determine the (single) user id for this client (cross-device partition)
             users_in_client = self.interaction_dataset.client_partition.client_ids_2_user_ids[client_id]
             if len(users_in_client) == 0:
                 continue

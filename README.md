@@ -31,7 +31,7 @@ Run code from the repository root (imports use `src.fedreclab`).
 ```python
 from src.fedreclab.data.load_data import load_cornac_dataset
 from src.fedreclab.data.split import StratifiedSplitStrategy
-from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
+from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
 from src.fedreclab.data.evaluator import FullRankingEvaluator
 from src.fedreclab.federated.client_selection import RandomClientSelection
 from src.fedreclab.federated.aggregation import FedAvg, SimpleAvg
@@ -43,7 +43,7 @@ dataset = load_cornac_dataset(
     splitting_strategy=StratifiedSplitStrategy(
         include_validation=True, include_test=True,
         val_size=0.1, test_size=0.2, chrono=True, by="user"),
-    client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+    client_partitioning_strategy=CrossDevicePartitionStrategy(),
     include_validation=True, include_test=True, seed=42,
 )
 

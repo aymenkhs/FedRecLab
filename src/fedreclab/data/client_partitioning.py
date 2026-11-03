@@ -26,7 +26,7 @@ class BaseClientPartitionStrategy:
         raise NotImplementedError("Subclasses must implement this method")
 
 
-class CrossDeviceSplittingStrategy(BaseClientPartitionStrategy):
+class CrossDevicePartitionStrategy(BaseClientPartitionStrategy):
     """
     Each unique user is mapped to a distinct client.
 

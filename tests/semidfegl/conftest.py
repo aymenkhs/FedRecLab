@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
+from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
 from src.fedreclab.data.dataset import InteractionDataset
 from src.fedreclab.data.split import RatioSplitStrategy
 from src.fedreclab.federated.aggregation import FedAvg
@@ -46,7 +46,7 @@ def tiny_dataset(n_users: int = 4) -> InteractionDataset:
         splitting_strategy=RatioSplitStrategy(
             include_validation=False, include_test=False
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         include_validation=False,
         include_test=False,

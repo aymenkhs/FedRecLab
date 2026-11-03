@@ -6,7 +6,7 @@ import torch
 
 from src.fedreclab.data.client_partitioning import (
     ClientPartition,
-    CrossDeviceSplittingStrategy,
+    CrossDevicePartitionStrategy,
 )
 from src.fedreclab.data.dataset import InteractionDataset
 from src.fedreclab.data.split import RatioSplitStrategy
@@ -75,7 +75,7 @@ def tiny_dataset(n_users: int = 3) -> InteractionDataset:
         splitting_strategy=RatioSplitStrategy(
             include_validation=False, include_test=False
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         include_validation=False,
         include_test=False,

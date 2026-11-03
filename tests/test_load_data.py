@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
+from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
 from src.fedreclab.data.load_data import CORNAC_DATASETS_VARIANTS, load_cornac_dataset
 from src.fedreclab.data.split import RatioSplitStrategy
 
@@ -50,7 +50,7 @@ def test_load_cornac_dataset_uses_variant_sizes(dataset_name, expected_variant):
             splitting_strategy=RatioSplitStrategy(
                 include_validation=False, include_test=False
             ),
-            client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+            client_partitioning_strategy=CrossDevicePartitionStrategy(),
             k_core=0,
         )
 

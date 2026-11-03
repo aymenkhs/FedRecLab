@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 
-from src.fedreclab.data.client_partitioning import CrossDeviceSplittingStrategy
+from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
 from src.fedreclab.data.dataset import InteractionDataset
 from src.fedreclab.data.evaluator import FullRankingEvaluator
 from src.fedreclab.data.split import RatioSplitStrategy
@@ -39,7 +39,7 @@ def _tiny_ranked_dataset():
         splitting_strategy=RatioSplitStrategy(
             include_validation=True, include_test=True
         ),
-        client_partitioning_strategy=CrossDeviceSplittingStrategy(),
+        client_partitioning_strategy=CrossDevicePartitionStrategy(),
         k_core=0,
         include_validation=True,
         include_test=True,
