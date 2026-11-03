@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture
 def sample_data():
     """Generates synthetic interaction data."""
     return pd.DataFrame(
@@ -99,8 +100,3 @@ def test_no_val_or_test_enabled(sample_data):
     assert len(train_idx) == len(sample_data)
     assert val_idx is None
     assert test_idx is None
-
-
-test_chronological_split(sample_data())
-test_random_split(sample_data())
-test_no_val_or_test_enabled(sample_data())
