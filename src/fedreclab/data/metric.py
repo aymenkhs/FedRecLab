@@ -127,3 +127,268 @@ def beyond_parity_metrics(
         }
     )
     return out
+
+
+class BiasMetrics:
+    """Computes bias metrics from per-user ranked lists.
+ 
+    Parameters
+    ----------
+    train_interactions : DataFrame
+        Train interactions (``user_col``, ``item_col``). Used for item popularity,
+        user profiles (calibration, GAP) and user activity (UGF).
+    catalog_items : array-like
+        Every item id that can be ranked (e.g. ``evaluator.full_item_list``).
+    item_categories : mapping item_id -> sequence of categories, optional
+        Enables category-aware metrics and calibration.
+    user_groups : mapping user_id -> group label, optional
+        Protected attribute (e.g. gender). Enables GBS, Beyond Parity and group gaps.
+    protected_groups : (a, b), optional
+        The two labels to compare. Inferred when ``user_groups`` has exactly two labels.
+    topk : int or sequence of int
+        Cut-offs for the top-k metrics.
+    compute_crp : bool
+        CRP needs ranked lists as long as floor(R_c) (can be large). Disable to keep
+        memory at ``max(topk)`` per user.
+    log_base : float
+        Log base in CDCG's discount (paper writes ``log(j+1)``; base 2 by default).
+    calibration_alpha : float
+        Smoothing in Steck's calibration (0.01 in the paper).
+    calibration_rank_discount : bool
+        Weight recommended items by 1/log2(rank+1) when building q(c|u).
+    activity_top_frac : float
+        Fraction of most active users forming the advantaged group for UGF (0.05).
+    head_share, tail_share : float
+        Head / tail items = most / least popular items covering that share of train interactions.
+    popularity_user_fracs : (blockbuster, diverse, niche)
+        Sizes of the user groups ordered by mean popularity of their train profile.
+    """
+ 
+    def __init__(
+        self,
+        train_interactions: pd.DataFrame,
+        catalog_items,
+        *,
+        item_categories: Mapping[Hashable, Sequence[Hashable]] | None = None,
+        user_groups: Mapping[Hashable, Hashable] | None = None,
+        protected_groups: tuple | None = None,
+        topk: int | Sequence[int] = (10,),
+        user_col: str = "user_id",
+        item_col: str = "item_id",
+        compute_crp: bool = True,
+        log_base: float = 2.0,
+        calibration_alpha: float = 0.01,
+        calibration_rank_discount: bool = False,
+        activity_top_frac: float = 0.05,
+        head_share: float = 0.2,
+        tail_share: float = 0.2,
+        popularity_user_fracs: tuple = (0.2, 0.6, 0.2),
+    ):
+        self.topk = [topk] if isinstance(topk, int) else list(topk)
+        self.catalog = pd.Index(catalog_items)
+        self.log_base = log_base
+        self.compute_crp = compute_crp
+        self.alpha = calibration_alpha
+        self.rank_discount = calibration_rank_discount
+        self.user_groups = dict(user_groups) if user_groups else None
+        self.group_pair = None
+        if self.user_groups:
+            labels = sorted(set(self.user_groups.values()), key=str)
+            if protected_groups is None:
+                if len(labels) != 2:
+                    raise ValueError(
+                        f"user_groups has {len(labels)} labels; pass protected_groups=(a, b)."
+                    )
+                protected_groups = tuple(labels)
+            self.group_pair = tuple(protected_groups)
+ 
+        self.cm = CategoryMatrix(item_categories, self.catalog) if item_categories else None
+ 
+        train = train_interactions[[user_col, item_col]].drop_duplicates()
+        self.profiles = {u: g.to_numpy() for u, g in train.groupby(user_col)[item_col]}
+ 
+        # --- activity groups (UGF) ---
+        counts = train.groupby(user_col).size().sort_values(ascending=False, kind="mergesort")
+        n_adv = max(1, math.ceil(activity_top_frac * len(counts)))
+        self.advantaged = set(counts.index[:n_adv])
+ 
+        # --- popularity ---
+        if head_share + tail_share >= 1.0:
+            raise ValueError("head_share + tail_share must be < 1")
+        item_counts = train.groupby(item_col).size().reindex(self.catalog, fill_value=0)
+        n_users = max(train[user_col].nunique(), 1)
+        self._phi = (item_counts / n_users).to_numpy(dtype=float)
+        total = float(item_counts.sum())
+        desc = item_counts.sort_values(ascending=False, kind="mergesort")
+        head = desc.index[(desc.cumsum() - desc) < head_share * total]
+        asc = desc[::-1]
+        tail = asc.index[(asc.cumsum() - asc) < tail_share * total].difference(head)
+        bucket = pd.Series(1, index=self.catalog)  # 0 head, 1 mid, 2 tail
+        bucket.loc[tail] = 2
+        bucket.loc[head] = 0
+        self._bucket = bucket.to_numpy()
+ 
+        prof_pop = {
+            u: float(self._phi[self.catalog.get_indexer(items)[self.catalog.get_indexer(items) >= 0]].mean())
+            for u, items in self.profiles.items()
+            if (self.catalog.get_indexer(items) >= 0).any()
+        }
+        self.profile_pop = prof_pop
+        ordered = sorted(prof_pop, key=prof_pop.get, reverse=True)
+        n = len(ordered)
+        n_b = math.ceil(popularity_user_fracs[0] * n)
+        n_n = math.ceil(popularity_user_fracs[2] * n)
+        self.pop_group: Dict[Hashable, str] = {}
+        for i, u in enumerate(ordered):
+            self.pop_group[u] = (
+                "blockbuster" if i < n_b else "niche" if i >= n - n_n else "diverse"
+            )
+ 
+    # ------------------------------------------------------------------ utils
+    @property
+    def max_rank_len(self) -> int:
+        """How many ranked items per user should be passed to ``compute``."""
+        base = max(self.topk)
+        if self.cm is not None and self.compute_crp:
+            base = max(base, int(np.floor(self.cm.total_mass.max())))
+        return base
+ 
+    def _masks(self, users):
+        if not self.group_pair:
+            return None
+        a, b = self.group_pair
+        arr = np.array([self.user_groups.get(u) for u in users], dtype=object)
+        ma, mb = arr == a, arr == b
+        if not ma.any() or not mb.any():
+            warnings.warn(f"Group {a!r} or {b!r} has no evaluated users; group gaps skipped.")
+            return None
+        return ma, mb
+ 
+    # ------------------------------------------------------------ main entry
+    def compute(
+        self,
+        rankings: Mapping[Hashable, np.ndarray],
+        per_user_metrics: Mapping[Hashable, Mapping[str, float]] | None = None,
+        eval_pairs: pd.DataFrame | None = None,
+    ) -> tuple[Dict[str, float], Dict[str, Any]]:
+        """Return ``(scalars, details)``.
+ 
+        rankings : user_id -> ranked item ids (best first, length >= ``max_rank_len``
+            when possible).
+        per_user_metrics : user_id -> {"ndcg@10": ...}; enables UGF / group gaps.
+        eval_pairs : DataFrame(user_id, item_id, pred, rating); enables Beyond Parity.
+        """
+        scalars: Dict[str, float] = {}
+        details: Dict[str, Any] = {}
+        if self.cm is not None:
+            self._category_block(rankings, scalars, details)
+            self._calibration_block(rankings, scalars)
+        if per_user_metrics:
+            self._ugf_block(per_user_metrics, scalars)
+        self._popularity_block(rankings, scalars, details)
+        if eval_pairs is not None and self.group_pair and len(eval_pairs):
+            scalars.update(beyond_parity_metrics(eval_pairs, self.user_groups, *self.group_pair))
+        return scalars, details
+ 
+    # -------------------------------------------------------- category-aware
+    def _category_block(self, rankings, scalars, details):
+        kept, rows = [], {}
+        for u, ranked in rankings.items():
+            m = category_user_metrics(
+                self.cm, np.asarray(ranked), self.topk, self.max_rank_len,
+                self.log_base, self.compute_crp,
+            )
+            if not m:
+                continue
+            kept.append(u)
+            for name, vec in m.items():
+                rows.setdefault(name, []).append(vec)
+        if not kept:
+            return
+        masks = self._masks(kept)
+        for name, vecs in rows.items():
+            M = np.vstack(vecs)
+            tbl = pd.DataFrame({"all": M.mean(axis=0)}, index=self.cm.categories)
+            if masks:
+                ma, mb = masks
+                a, b = self.group_pair
+                tbl[str(a)] = M[ma].mean(axis=0)
+                tbl[str(b)] = M[mb].mean(axis=0)
+                tbl["abs_diff"] = (tbl[str(a)] - tbl[str(b)]).abs()
+                scalars[f"gbs_{name}"] = float(tbl["abs_diff"].sum())
+            details[f"category/{name}"] = tbl
+ 
+    # ----------------------------------------------------------- calibration
+    def _calibration_block(self, rankings, scalars):
+        vals = {k: {} for k in self.topk}
+        for u, ranked in rankings.items():
+            prof = self.profiles.get(u)
+            if prof is None:
+                continue
+            p = self.cm.weights(prof).sum(axis=0)
+            if p.sum() <= 0:
+                continue
+            p = p / p.sum()
+            for k in self.topk:
+                top = np.asarray(ranked)[:k]
+                if len(top) == 0:
+                    continue
+                w = (1.0 / np.log2(np.arange(2, len(top) + 2))) if self.rank_discount else np.ones(len(top))
+                q = (w[:, None] * self.cm.weights(top)).sum(axis=0)
+                if q.sum() > 0:
+                    q = q / q.sum()
+                q_t = (1 - self.alpha) * q + self.alpha * p
+                m = p > 0
+                vals[k][u] = float(np.sum(p[m] * np.log(p[m] / q_t[m])))
+        for k, d in vals.items():
+            if not d:
+                continue
+            scalars[f"calib_kl@{k}"] = float(np.mean(list(d.values())))
+            users = list(d)
+            masks = self._masks(users)
+            if masks:
+                v = np.array([d[u] for u in users])
+                scalars[f"calib_kl_gap@{k}"] = float(abs(v[masks[0]].mean() - v[masks[1]].mean()))
+ 
+    # ------------------------------------------------------------------ UGF
+    def _ugf_block(self, per_user_metrics, scalars):
+        users = list(per_user_metrics)
+        adv = np.array([u in self.advantaged for u in users])
+        masks = self._masks(users)
+        names = per_user_metrics[users[0]].keys()
+        for name in names:
+            v = np.array([per_user_metrics[u][name] for u in users], dtype=float)
+            if adv.any() and (~adv).any():
+                scalars[f"ugf_{name}"] = float(abs(v[adv].mean() - v[~adv].mean()))
+            if masks:
+                scalars[f"group_gap_{name}"] = float(abs(v[masks[0]].mean() - v[masks[1]].mean()))
+ 
+    # ----------------------------------------------------------- popularity
+    def _popularity_block(self, rankings, scalars, details):
+        for k in self.topk:
+            rows, recommended = [], set()
+            for u, ranked in rankings.items():
+                grp = self.pop_group.get(u)
+                top = np.asarray(ranked)[:k]
+                idx = self.catalog.get_indexer(top)
+                idx = idx[idx >= 0]
+                if grp is None or len(idx) == 0:
+                    continue
+                recommended.update(idx.tolist())
+                share = np.bincount(self._bucket[idx], minlength=3) / len(idx)
+                rows.append((u, grp, self.profile_pop[u], self._phi[idx].mean(), *share))
+            if not rows:
+                continue
+            df = pd.DataFrame(
+                rows, columns=["user", "group", "gap_profile", "gap_rec", "head", "mid", "tail"]
+            )
+            by = df.groupby("group")[["gap_profile", "gap_rec", "head", "mid", "tail"]].mean()
+            by["delta_gap"] = _safe_div(by["gap_rec"] - by["gap_profile"], by["gap_profile"])
+            details[f"popularity@{k}"] = by
+            for grp, r in by.iterrows():
+                scalars[f"gap_delta_{grp}@{k}"] = float(r["delta_gap"])
+            scalars[f"avg_rec_popularity@{k}"] = float(df["gap_rec"].mean())
+            for b in ("head", "mid", "tail"):
+                scalars[f"{b}_exposure@{k}"] = float(df[b].mean())
+            scalars[f"item_coverage@{k}"] = len(recommended) / len(self.catalog)
+ 

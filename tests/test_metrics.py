@@ -326,50 +326,50 @@ class TestBeyondParity:
 # # =====================================================================
 # # UGF
 # # =====================================================================
-# class TestUGF:
-#     PUM = {
-#         0: {"ndcg@2": 0.2},
-#         1: {"ndcg@2": 0.4},
-#         2: {"ndcg@2": 0.6},
-#         3: {"ndcg@2": 0.9},
-#     }
+class TestUGF:
+    PUM = {
+        0: {"ndcg@2": 0.2},
+        1: {"ndcg@2": 0.4},
+        2: {"ndcg@2": 0.6},
+        3: {"ndcg@2": 0.9},
+    }
 
-#     def test_activity_groups(self, train):
-#         assert make_bm(train).advantaged == {3}
+    def test_activity_groups(self, train):
+        assert make_bm(train).advantaged == {3}
 
-#     def test_activity_top_frac_ceil(self, train):
-#         assert make_bm(train, activity_top_frac=0.5).advantaged == {3, 2}
-#         assert make_bm(train, activity_top_frac=0.01).advantaged == {3}  # at least 1
+    def test_activity_top_frac_ceil(self, train):
+        assert make_bm(train, activity_top_frac=0.5).advantaged == {3, 2}
+        assert make_bm(train, activity_top_frac=0.01).advantaged == {3}  # at least 1
 
-#     def test_ugf_hand_computed(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=self.PUM)
-#         # adv = u3 (.9); others mean = .4
-#         assert s["ugf_ndcg@2"] == pytest.approx(0.5)
+    def test_ugf_hand_computed(self, train):
+        s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=self.PUM)
+        # adv = u3 (.9); others mean = .4
+        assert s["ugf_ndcg@2"] == pytest.approx(0.5)
 
-#     def test_group_gap_hand_computed(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=self.PUM)
-#         # f mean .3 ; m mean .75
-#         assert s["group_gap_ndcg@2"] == pytest.approx(0.45)
+    def test_group_gap_hand_computed(self, train):
+        s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=self.PUM)
+        # f mean .3 ; m mean .75
+        assert s["group_gap_ndcg@2"] == pytest.approx(0.45)
 
-#     def test_ugf_uses_all_metric_names(self, train):
-#         pum = {u: {"ndcg@2": v["ndcg@2"], "recall@2": 1.0} for u, v in self.PUM.items()}
-#         s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=pum)
-#         assert s["ugf_recall@2"] == pytest.approx(0.0)
+    def test_ugf_uses_all_metric_names(self, train):
+        pum = {u: {"ndcg@2": v["ndcg@2"], "recall@2": 1.0} for u, v in self.PUM.items()}
+        s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=pum)
+        assert s["ugf_recall@2"] == pytest.approx(0.0)
 
-#     def test_equal_performance_gives_zero(self, train):
-#         pum = {u: {"ndcg@2": 0.5} for u in range(4)}
-#         s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=pum)
-#         assert s["ugf_ndcg@2"] == pytest.approx(0.0)
-#         assert s["group_gap_ndcg@2"] == pytest.approx(0.0)
+    def test_equal_performance_gives_zero(self, train):
+        pum = {u: {"ndcg@2": 0.5} for u in range(4)}
+        s, _ = make_bm(train).compute(RANK_MIXED, per_user_metrics=pum)
+        assert s["ugf_ndcg@2"] == pytest.approx(0.0)
+        assert s["group_gap_ndcg@2"] == pytest.approx(0.0)
 
-#     def test_no_ugf_when_all_users_advantaged(self, train):
-#         bm = make_bm(train, activity_top_frac=1.0)
-#         s, _ = bm.compute(RANK_MIXED, per_user_metrics=self.PUM)
-#         assert "ugf_ndcg@2" not in s
+    def test_no_ugf_when_all_users_advantaged(self, train):
+        bm = make_bm(train, activity_top_frac=1.0)
+        s, _ = bm.compute(RANK_MIXED, per_user_metrics=self.PUM)
+        assert "ugf_ndcg@2" not in s
 
-#     def test_no_per_user_metrics_no_ugf(self, train):
-#         s, _ = make_bm(train).compute(RANK_MIXED)
-#         assert not any(k.startswith(("ugf_", "group_gap_")) for k in s)
+    def test_no_per_user_metrics_no_ugf(self, train):
+        s, _ = make_bm(train).compute(RANK_MIXED)
+        assert not any(k.startswith(("ugf_", "group_gap_")) for k in s)
 
 
 # # =====================================================================
