@@ -145,9 +145,33 @@ class BaseClientAlgorithm:
     def apply_privacy(
         self,
         training_request: ClientTrainingRequest,
-        training_response: ClientTrainingResponse
-    ) -> List[UpdatePackage]:
-        pass
+        training_response: ClientTrainingResponse,
+    ) -> ClientTrainingResponse:
+        """Return the upload unchanged.
+
+        The server calls this after ``local_train`` and before
+        aggregation. Methods that add noise or fake rows override it
+        and return the same response object with ``updates_packages``
+        replaced. The default does not copy the response.
+
+        Parameters
+        ----------
+        training_request : ClientTrainingRequest
+            Request that produced ``training_response``.
+        training_response : ClientTrainingResponse
+            Unprotected training result.
+
+        Returns
+        -------
+        ClientTrainingResponse
+            ``training_response`` itself.
+
+        Examples
+        --------
+        >>> BaseClientAlgorithm().apply_privacy(None, "response")
+        'response'
+        """
+        return training_response
 
     def _update_package(
         self,

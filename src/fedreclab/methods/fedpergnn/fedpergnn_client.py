@@ -18,11 +18,11 @@ Training task (``task``):
   row is label 1 (raw ratings and play counts are ignored), unobserved
   items are sampled as label 0, and the client optimises BCE-with-logits.
   Drop low-count implicit rows with ``rating_exclusion_threshold`` at load
-  time before this binarisation. Row-layout item uploads include every
+  time before this binarisation.   Row-layout item uploads include every
   item that entered the local loss, so ranking negatives are visible to
-  the server. Pseudo-interacted items in the paper are synthetic gradient
-  noise for privacy; they are not these ranking negatives and are not
-  implemented here.
+  the server. Pseudo-interacted items are not those negatives: they are
+  extra rows added by ``apply_privacy``, with gradients drawn to match
+  the observed-item deltas, and they never enter the loss.
 
 optimizer_state_scope:
   - "client_resident" (default): persist Adam moments for the owner row
@@ -45,6 +45,7 @@ from src.fedreclab.federated.base_client import (
     ClientTrainingRequest,
     ClientTrainingResponse,
 )
+from src.fedreclab.federated.mechanisms import ClipLaplaceLDP, PseudoItemSampling
 from src.fedreclab.federated.utils import (
     assert_client_names_disjoint,
     assert_skeleton_server_coverage,
@@ -60,6 +61,8 @@ _OPTIMIZER_STATE_SCOPES = ("client_resident", "none", "all")
 _TASKS = ("rating", "ranking")
 _ALL_SCOPE_WARN_BYTES = 1 << 30
 _DEFAULT_RANKING_NEGATIVES = 4
+# Fourth seed term so privacy draws do not share a stream with local shuffling.
+_PRIVACY_RNG_SALT = 17
 
 
 class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
@@ -98,13 +101,26 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         Unobserved items sampled per positive. ``None`` (default) is 0
         under ``task="rating"`` and 4 under ``task="ranking"``. Must be
         0 when ``task="rating"``.
+    num_pseudo_items : int, optional
+        Pseudo-interacted items appended to the item-embedding upload
+        by :meth:`apply_privacy`. ``0`` (default) disables them. Wu et
+        al. use 1000. These rows never enter the loss.
+    ldp_clip : float or None, optional
+        Shared L1 clip ``δ`` on the item, user and model deltas.
+        ``None`` (default) disables clipping. Wu et al. use 0.1.
+    ldp_scale : float, optional
+        Laplace scale ``λ`` added after the clip. ``0`` (default)
+        disables noise. Wu et al. use 0.2, and bound the privacy
+        budget by ``2 * δ * e / λ`` with ``e`` local epochs.
 
     Raises
     ------
     ValueError
         If ``optimizer_state_scope`` or ``task`` is unknown, if
         ``neg_samples`` is negative, or if rating mode is paired with
-        a non-zero ``neg_samples``.
+        a non-zero ``neg_samples``. Also if ``num_pseudo_items`` is
+        negative, ``ldp_clip`` is not a positive finite number, or
+        ``ldp_scale`` is negative.
 
     Examples
     --------
@@ -126,6 +142,9 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         optimizer_state_scope: str = "client_resident",
         task: str = "rating",
         neg_samples: int | None = None,
+        num_pseudo_items: int = 0,
+        ldp_clip: float | None = None,
+        ldp_scale: float = 0.0,
     ) -> None:
         super().__init__()
         if optimizer_state_scope not in _OPTIMIZER_STATE_SCOPES:
@@ -160,6 +179,12 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         self.optimizer_state_scope = optimizer_state_scope
         self.task = task
         self.neg_samples = resolved_neg
+        # Constructors validate count, clip and scale and reject bools.
+        self.pseudo_items = PseudoItemSampling(num_pseudo_items)
+        self.clip_laplace = ClipLaplaceLDP(clip=ldp_clip, scale=ldp_scale)
+        self.num_pseudo_items = self.pseudo_items.count
+        self.ldp_clip = self.clip_laplace.clip
+        self.ldp_scale = self.clip_laplace.scale
 
         self._num_items: int | None = None
         self._skeleton: FedPerGNNModel | None = None
@@ -400,6 +425,511 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
             extra_response={"task": self.task},
         )
 
+    def apply_privacy(self, training_request, training_response):
+        """Append pseudo-item rows and protect the upload with LDP.
+
+        The server calls this after :meth:`local_train`. With the
+        defaults (no pseudo items, no clip, no noise) the response is
+        returned untouched.
+
+        Pseudo rows are catalogue ids outside the observed items and
+        outside the rows already uploaded. Their parameter value is the
+        downloaded embedding minus a diagonal-Gaussian vector matched
+        to the observed items' deltas (downloaded row minus uploaded
+        row). They are not training samples.
+
+        When clipping or Laplace noise is enabled, one L1 budget covers
+        the item-row deltas (existing and pseudo), the user-row deltas
+        and every model-state tensor. Protected values are written back
+        as parameters: ``downloaded - protected_delta``. The owner user
+        delta is taken from the client-state row the step started from;
+        neighbour rows, when present, use the server user table. This
+        write-back is a stand-in until the groups are exchanged as
+        gradients.
+
+        Parameters
+        ----------
+        training_request : ClientTrainingRequest
+            Carries the downloaded tables, the training items and the seed.
+        training_response : ClientTrainingResponse
+            Result of :meth:`local_train`. Packages are updated in place.
+
+        Returns
+        -------
+        ClientTrainingResponse
+            ``training_response``.
+
+        Raises
+        ------
+        RuntimeError
+            If privacy is enabled and ``training_request.seed`` is None,
+            or an observed item is missing from the item upload.
+        TypeError
+            If the item upload is not a sparse ``{rows, values}`` dict
+            while privacy is enabled.
+        ValueError
+            If fewer than ``num_pseudo_items`` candidates remain, or a
+            protected array is non-finite.
+        KeyError
+            If Laplace or clipping is enabled and a non-owner user row
+            has no server user table to difference against.
+
+        Examples
+        --------
+        >>> client = FedPerGNNClientAlgorithm(num_pseudo_items=0)
+        >>> client.apply_privacy(None, "response")
+        'response'
+        """
+        if self.num_pseudo_items == 0 and not self.clip_laplace.enabled:
+            return training_response
+        rng = self._privacy_rng(training_request)
+        self._protect_item_rows(training_request, training_response, rng)
+        return training_response
+
+    def _privacy_rng(self, training_request: ClientTrainingRequest):
+        """Seeded generator for pseudo items and Laplace noise.
+
+        The stream is ``[seed, client_id, current_round, salt]`` so it
+        does not follow the shuffle generator inside :meth:`local_train`.
+
+        Parameters
+        ----------
+        training_request : ClientTrainingRequest
+            Must carry a non-None ``seed``.
+
+        Returns
+        -------
+        numpy.random.Generator
+
+        Raises
+        ------
+        RuntimeError
+            If ``seed`` is None.
+
+        Examples
+        --------
+        >>> client = FedPerGNNClientAlgorithm(num_pseudo_items=1)
+        >>> req = ClientTrainingRequest(
+        ...     client_id=1, current_round=2, users_in_client=[1],
+        ...     client_state=None, global_payload={}, training_data=None,
+        ...     seed=3)
+        >>> client._privacy_rng(req).integers(1_000_000) == (
+        ...     np.random.default_rng([3, 1, 2, 17]).integers(1_000_000))
+        True
+        """
+        if training_request.seed is None:
+            raise RuntimeError(
+                "FedPerGNN privacy sampling needs ClientTrainingRequest.seed. "
+                "Pass a seed on the server so pseudo items and Laplace noise "
+                "are reproducible."
+            )
+        return np.random.default_rng(
+            [
+                int(training_request.seed),
+                int(training_request.client_id),
+                int(training_request.current_round),
+                _PRIVACY_RNG_SALT,
+            ]
+        )
+
+    def _protect_item_rows(self, training_request, training_response, rng):
+        """Write pseudo-item rows and, when enabled, LDP into the packages.
+
+        Draw order on ``rng`` is fixed: pseudo ids, matched gradients,
+        then Laplace noise over item deltas, pseudo deltas, user deltas
+        and model tensors. Existing item rows keep their values when
+        LDP is off.
+
+        Parameters
+        ----------
+        training_request : ClientTrainingRequest
+            Downloaded parameters and the local interaction table.
+        training_response : ClientTrainingResponse
+            Packages produced by :meth:`local_train`.
+        rng : numpy.random.Generator
+            Generator from :meth:`_privacy_rng`.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        TypeError
+            If ``item_embeddings`` is not a row-layout upload.
+        RuntimeError
+            If an observed item has no uploaded row.
+        KeyError
+            If a neighbour user row needs the server user table and it
+            is absent.
+        ValueError
+            If the pseudo-item pool is too small or a value is non-finite.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> from src.fedreclab.federated.base_client import (
+        ...     ClientStateBase, ClientTrainingRequest, ClientTrainingResponse)
+        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> client = FedPerGNNClientAlgorithm(num_pseudo_items=1)
+        >>> table = np.zeros((3, 1), dtype=np.float32)
+        >>> state = ClientStateBase(0, {})
+        >>> req = ClientTrainingRequest(
+        ...     client_id=0, current_round=0, users_in_client=[0],
+        ...     client_state=state,
+        ...     global_payload={"item_embeddings": table},
+        ...     training_data=pd.DataFrame({"item_id": [0]}),
+        ...     seed=0,
+        ... )
+        >>> resp = ClientTrainingResponse(
+        ...     client_id=0, updated_client_state=state, updates_packages={
+        ...         "item_embeddings": UpdatePackage(
+        ...             "item_embeddings",
+        ...             ParamIO("server", "params", "server", layout="rows"),
+        ...             {"rows": np.array([0]),
+        ...              "values": np.array([[0.5]], dtype=np.float32)},
+        ...             {},
+        ...         ),
+        ...     },
+        ...     training_losses=[], training_duration=0.0, num_training_examples=1,
+        ... )
+        >>> client._protect_item_rows(req, resp, client._privacy_rng(req))
+        >>> rows = resp.updates_packages["item_embeddings"].param_value["rows"]
+        >>> int(rows[0]) == 0 and len(rows) == 2
+        True
+        """
+        item_package = training_response.updates_packages["item_embeddings"]
+        upload = item_package.param_value
+        if not isinstance(upload, dict) or "rows" not in upload or "values" not in upload:
+            raise TypeError(
+                "FedPerGNN privacy expects a sparse item upload "
+                "{'rows', 'values'}. A dense item table cannot take "
+                "extra pseudo-item rows."
+            )
+        downloaded_items = np.asarray(
+            training_request.global_payload["item_embeddings"], dtype=np.float32
+        )
+        rows = np.asarray(upload["rows"], dtype=np.int64)
+        values = np.asarray(upload["values"], dtype=np.float32)
+        observed = {
+            int(item_id)
+            for item_id in training_request.training_data["item_id"].to_numpy()
+        }
+        real_idx = np.array([int(row) in observed for row in rows], dtype=bool)
+        if self.num_pseudo_items > 0:
+            missing = observed.difference(int(row) for row in rows)
+            if missing:
+                raise RuntimeError(
+                    "Observed items "
+                    f"{sorted(missing)} are missing from the item upload, "
+                    "so pseudo-item gradients cannot be matched to them."
+                )
+            if not real_idx.any():
+                raise RuntimeError(
+                    "Cannot match pseudo-item gradients: the upload has "
+                    "no observed-item rows."
+                )
+            real_deltas = downloaded_items[rows[real_idx]] - values[real_idx]
+            excluded = observed.union(int(row) for row in rows)
+            pseudo_ids = self.pseudo_items.sample_ids(
+                int(downloaded_items.shape[0]), excluded, rng
+            )
+            pseudo_deltas = self.pseudo_items.matched_gradients(real_deltas, rng)
+        else:
+            pseudo_ids = np.zeros((0,), dtype=np.int64)
+            pseudo_deltas = np.zeros((0, values.shape[1]), dtype=np.float32)
+
+        new_user = None
+        new_model = None
+        if self.clip_laplace.enabled:
+            existing_deltas = downloaded_items[rows] - values
+            user_starts, user_deltas = self._user_deltas(
+                training_request, training_response
+            )
+            model_keys, model_starts, model_deltas = self._model_deltas(
+                training_request, training_response
+            )
+            protected = self.clip_laplace.apply(
+                [existing_deltas, pseudo_deltas, user_deltas, *model_deltas],
+                rng,
+            )
+            new_values = downloaded_items[rows] - protected[0]
+            pseudo_values = downloaded_items[pseudo_ids] - protected[1]
+            new_user = (user_starts - protected[2]).astype(np.float32, copy=False)
+            new_model = [
+                (start - delta).astype(np.float32, copy=False)
+                for start, delta in zip(model_starts, protected[3:])
+            ]
+        else:
+            new_values = values
+            pseudo_values = downloaded_items[pseudo_ids] - pseudo_deltas
+
+        protected_parts = [new_values, pseudo_values]
+        if new_user is not None:
+            protected_parts.append(new_user)
+            protected_parts.extend(new_model)
+        if any(not np.isfinite(part).all() for part in protected_parts):
+            raise ValueError("Protected upload contains non-finite values")
+        if new_user is not None:
+            self._write_user_values(training_response, new_user)
+            self._write_model_values(training_response, model_keys, new_model)
+        item_package.param_value = {
+            "rows": np.concatenate([rows, pseudo_ids]).astype(np.int64, copy=False),
+            "values": np.concatenate([new_values, pseudo_values], axis=0).astype(
+                np.float32, copy=False
+            ),
+        }
+
+    def _user_deltas(self, training_request, training_response):
+        """Deltas of the uploaded user rows from the vector each step started at.
+
+        The owner row starts from ``ClientState``, which can differ from
+        the server mirror. Neighbour rows start from that mirror.
+
+        Parameters
+        ----------
+        training_request : ClientTrainingRequest
+            Original client state and, when a neighbour row is present,
+            ``global_payload['user_embeddings']``.
+        training_response : ClientTrainingResponse
+            Must contain a sparse ``user_embeddings`` package.
+
+        Returns
+        -------
+        starts : ndarray
+            Shape ``(n, d)``, the pre-step rows.
+        deltas : ndarray
+            ``starts - uploaded values``, shape ``(n, d)``.
+
+        Raises
+        ------
+        KeyError
+            If a neighbour row is uploaded and the server user table
+            is missing.
+        TypeError
+            If the user upload is not a sparse row dict.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> from src.fedreclab.federated.base_client import (
+        ...     ClientStateBase, ClientTrainingRequest, ClientTrainingResponse)
+        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> state = ClientStateBase(
+        ...     0, {"user_embedding.weight": np.array([[1.0, 0.0]], dtype=np.float32)})
+        >>> req = ClientTrainingRequest(
+        ...     client_id=0, current_round=0, users_in_client=[0],
+        ...     client_state=state, global_payload={}, training_data=pd.DataFrame(),
+        ... )
+        >>> resp = ClientTrainingResponse(
+        ...     client_id=0, updated_client_state=state, updates_packages={
+        ...         "user_embeddings": UpdatePackage(
+        ...             "user_embeddings",
+        ...             ParamIO("server", "params", "server", layout="rows"),
+        ...             {"rows": np.array([0]), "values": np.array([[0.0, 0.0]], dtype=np.float32)},
+        ...             {},
+        ...         ),
+        ...     },
+        ...     training_losses=[], training_duration=0.0, num_training_examples=1,
+        ... )
+        >>> starts, deltas = FedPerGNNClientAlgorithm()._user_deltas(req, resp)
+        >>> np.allclose(deltas, [[1.0, 0.0]])
+        True
+        """
+        package = training_response.updates_packages["user_embeddings"]
+        upload = package.param_value
+        if not isinstance(upload, dict) or "rows" not in upload or "values" not in upload:
+            raise TypeError(
+                "FedPerGNN LDP expects a sparse user upload {'rows', 'values'}."
+            )
+        user_rows = np.asarray(upload["rows"], dtype=np.int64)
+        user_values = np.asarray(upload["values"], dtype=np.float32)
+        owner_id = int(training_request.users_in_client[0])
+        owner_start = np.asarray(
+            training_request.client_state.local_parameters["user_embedding.weight"],
+            dtype=np.float32,
+        ).reshape(-1)
+        starts = np.empty_like(user_values)
+        table = training_request.global_payload.get("user_embeddings")
+        table_np = None if table is None else np.asarray(table, dtype=np.float32)
+        for index, user_id in enumerate(user_rows):
+            if int(user_id) == owner_id:
+                starts[index] = owner_start
+                continue
+            if table_np is None:
+                raise KeyError(
+                    "user_embeddings is missing from global_payload, so the "
+                    f"neighbour row {int(user_id)} has no pre-step vector to clip."
+                )
+            starts[index] = table_np[int(user_id)]
+        return starts, starts - user_values
+
+    def _model_deltas(self, training_request, training_response):
+        """Per-tensor deltas of the uploaded model state.
+
+        Parameters
+        ----------
+        training_request : ClientTrainingRequest
+            ``global_payload['model_state']`` is the downloaded dict.
+        training_response : ClientTrainingResponse
+            ``model_state`` package is the locally updated dict.
+
+        Returns
+        -------
+        keys : list of str
+            Tensor names in upload order.
+        starts : list of ndarray
+            Downloaded tensors as float32.
+        deltas : list of ndarray
+            ``start - uploaded`` for each key.
+
+        Raises
+        ------
+        ValueError
+            If the two dicts have different keys or shapes.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> from src.fedreclab.federated.base_client import (
+        ...     ClientStateBase, ClientTrainingRequest, ClientTrainingResponse)
+        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> state = ClientStateBase(0, {})
+        >>> req = ClientTrainingRequest(
+        ...     client_id=0, current_round=0, users_in_client=[0],
+        ...     client_state=state,
+        ...     global_payload={"model_state": {"w": np.array([1.0], dtype=np.float32)}},
+        ...     training_data=pd.DataFrame(),
+        ... )
+        >>> resp = ClientTrainingResponse(
+        ...     client_id=0, updated_client_state=state, updates_packages={
+        ...         "model_state": UpdatePackage(
+        ...             "model_state", ParamIO("server", "params", "server"),
+        ...             {"w": np.array([0.25], dtype=np.float32)}, {},
+        ...         ),
+        ...     },
+        ...     training_losses=[], training_duration=0.0, num_training_examples=1,
+        ... )
+        >>> keys, _, deltas = FedPerGNNClientAlgorithm()._model_deltas(req, resp)
+        >>> keys == ["w"] and np.allclose(deltas[0], [0.75])
+        True
+        """
+        uploaded = training_response.updates_packages["model_state"].param_value
+        downloaded = training_request.global_payload["model_state"]
+        if set(uploaded) != set(downloaded):
+            raise ValueError(
+                "model_state keys in the upload "
+                f"{sorted(uploaded)} do not match the downloaded keys "
+                f"{sorted(downloaded)}"
+            )
+        keys = list(uploaded)
+        starts = []
+        deltas = []
+        for key in keys:
+            start = np.asarray(downloaded[key], dtype=np.float32)
+            current = np.asarray(uploaded[key], dtype=np.float32)
+            if start.shape != current.shape:
+                raise ValueError(
+                    f"model_state[{key!r}] shape changed from {start.shape} "
+                    f"to {current.shape}"
+                )
+            starts.append(start)
+            deltas.append(start - current)
+        return keys, starts, deltas
+
+    @staticmethod
+    def _write_user_values(training_response, values):
+        """Store protected user-row values on the existing row ids.
+
+        Parameters
+        ----------
+        training_response : ClientTrainingResponse
+            Response whose ``user_embeddings`` package is updated in place.
+        values : ndarray
+            New row values, shape ``(n, d)``, already equal to
+            ``start - protected_delta``.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from src.fedreclab.federated.base_client import (
+        ...     ClientStateBase, ClientTrainingResponse)
+        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> resp = ClientTrainingResponse(
+        ...     client_id=0,
+        ...     updated_client_state=ClientStateBase(0, {}),
+        ...     updates_packages={
+        ...         "user_embeddings": UpdatePackage(
+        ...             "user_embeddings",
+        ...             ParamIO("server", "params", "server", layout="rows"),
+        ...             {"rows": np.array([3]), "values": np.zeros((1, 1), dtype=np.float32)},
+        ...             {},
+        ...         ),
+        ...     },
+        ...     training_losses=[], training_duration=0.0, num_training_examples=0,
+        ... )
+        >>> FedPerGNNClientAlgorithm._write_user_values(
+        ...     resp, np.array([[0.5]], dtype=np.float32))
+        >>> int(resp.updates_packages["user_embeddings"].param_value["rows"][0])
+        3
+        """
+        package = training_response.updates_packages["user_embeddings"]
+        upload = package.param_value
+        package.param_value = {
+            "rows": np.asarray(upload["rows"], dtype=np.int64),
+            "values": np.asarray(values, dtype=np.float32),
+        }
+
+    @staticmethod
+    def _write_model_values(training_response, keys, values):
+        """Store protected model tensors under the same names.
+
+        Parameters
+        ----------
+        training_response : ClientTrainingResponse
+            Response whose ``model_state`` dict is updated in place.
+        keys : sequence of str
+            Tensor names, aligned with ``values``.
+        values : sequence of ndarray
+            Protected tensors, one per key.
+
+        Returns
+        -------
+        None
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from src.fedreclab.federated.base_client import (
+        ...     ClientStateBase, ClientTrainingResponse)
+        >>> from src.fedreclab.federated.utils import ParamIO, UpdatePackage
+        >>> resp = ClientTrainingResponse(
+        ...     client_id=0,
+        ...     updated_client_state=ClientStateBase(0, {}),
+        ...     updates_packages={
+        ...         "model_state": UpdatePackage(
+        ...             "model_state", ParamIO("server", "params", "server"),
+        ...             {"w": np.zeros(1, dtype=np.float32)}, {},
+        ...         ),
+        ...     },
+        ...     training_losses=[], training_duration=0.0, num_training_examples=0,
+        ... )
+        >>> FedPerGNNClientAlgorithm._write_model_values(
+        ...     resp, ["w"], [np.array([0.25], dtype=np.float32)])
+        >>> float(resp.updates_packages["model_state"].param_value["w"][0])
+        0.25
+        """
+        state = training_response.updates_packages["model_state"].param_value
+        for key, value in zip(keys, values):
+            state[key] = np.asarray(value, dtype=np.float32)
+
     def _build_epoch_samples(
         self,
         pos_item_ids: np.ndarray,
@@ -412,7 +942,8 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         ratings and no negatives are added. Under ``task="ranking"`` each
         observed row is label 1 and ``neg_samples`` items the user has not
         interacted with are sampled as label 0. Paper pseudo-items are not
-        sampled here: they never enter the loss.
+        sampled here: they never enter the loss. ``apply_privacy`` appends
+        them to the item upload afterwards.
 
         Parameters
         ----------

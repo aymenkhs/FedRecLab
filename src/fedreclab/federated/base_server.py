@@ -399,6 +399,10 @@ class BaseFederatedServer:
             seed=self.seed,
         )
         training_response = self.client_algorithm.local_train(training_request)
+        # Mechanisms in apply_privacy see the finished upload, before aggregation.
+        training_response = self.client_algorithm.apply_privacy(
+            training_request, training_response
+        )
         client_state = training_response.updated_client_state
         self.client_states[client_id] = client_state
         return training_response

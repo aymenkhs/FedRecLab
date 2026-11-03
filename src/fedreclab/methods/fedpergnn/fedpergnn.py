@@ -9,6 +9,9 @@ from src.fedreclab.methods.fedpergnn.fedpergnn_model import FedPerGNNModel
 
 
 def default_param_ios() -> dict[str, ParamIO]:
+    # TODO: switch model_state, item_embeddings and user_embeddings to
+    # exchange="gradient" or "delta" so the server applies
+    # Theta <- Theta - alpha * g. Uploads are still parameters.
     return {
         "model_state": ParamIO(
             residency="server", exchange="params", apply_to="server",
@@ -51,8 +54,21 @@ class FedPerGNN(BaseFederatedServer):
 
       ``task="ranking"`` is the library ranking protocol (binary labels,
       sampled negatives, BCE-with-logits), not the paper. Paper
-      pseudo-interacted items are synthetic gradient noise for privacy
-      and never enter the loss; they are not ranking negatives.
+      pseudo-interacted items are synthetic gradient rows for privacy.
+      They are appended to the item upload by ``apply_privacy`` and
+      never enter the loss; they are not ranking negatives.
+
+      Privacy defaults are off (``num_pseudo_items=0``, no clip, no
+      Laplace noise). Wu et al. use M=1000, an L1 clip of 0.1 and
+      Laplace scale 0.2. Those knobs are opt-in while the groups are
+      still exchanged as parameters: the protected step is written
+      back into the parameter rows, and the server averages those
+      rows. The paper instead averages gradients and applies
+      Theta <- Theta - alpha * g. See the TODO on ``default_param_ios``.
+      Pseudo gradients use a diagonal Gaussian, the per-coordinate
+      mean and standard deviation of the observed-item deltas. A full
+      covariance is singular when a user has fewer interactions than
+      the embedding width.
 
     Neighbour expansion and the initial user table use ``expansion_seed`` if
     set, otherwise the server ``seed``. Both default to None (unseeded).
