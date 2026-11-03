@@ -29,14 +29,14 @@ Run code from the repository root (imports use `src.fedreclab`).
 ## Quick start: FedNCF on MovieLens-100K
 
 ```python
-from src.fedreclab.data.load_data import load_cornac_dataset
-from src.fedreclab.data.split import StratifiedSplitStrategy
-from src.fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
-from src.fedreclab.data.evaluator import FullRankingEvaluator
-from src.fedreclab.federated.client_selection import RandomClientSelection
-from src.fedreclab.federated.aggregation import FedAvg, SimpleAvg
-from src.fedreclab.methods.fedncf.fedncf import FedNCF
-from src.fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
+from fedreclab.data.load_data import load_cornac_dataset
+from fedreclab.data.split import StratifiedSplitStrategy
+from fedreclab.data.client_partitioning import CrossDevicePartitionStrategy
+from fedreclab.data.evaluator import FullRankingEvaluator
+from fedreclab.federated.client_selection import RandomClientSelection
+from fedreclab.federated.aggregation import FedAvg, SimpleAvg
+from fedreclab.methods.fedncf.fedncf import FedNCF
+from fedreclab.methods.fedncf.fedncf_client import FedNCFClientAlgorithm
 
 dataset = load_cornac_dataset(
     dataset_name="movielens_100k",
