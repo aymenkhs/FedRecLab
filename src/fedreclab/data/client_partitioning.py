@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -148,7 +148,7 @@ def _log_partition_sizes(
     client_ids_2_user_ids: Mapping[int, List[int]],
     client_train_sizes: Mapping[int, int],
     *,
-    target_interaction_proportion: float | None = None,
+    target_interaction_proportion: float | Sequence[float] | None = None,
 ) -> None:
     """Log min, max and mean client sizes in users and interactions.
 
@@ -158,10 +158,12 @@ def _log_partition_sizes(
         Users assigned to each client.
     client_train_sizes : mapping of int to int
         Training interaction counts per client.
-    target_interaction_proportion : float or None, optional
+    target_interaction_proportion : float, sequence of float, or None, optional
         When set, also log the largest absolute gap between each
         client's achieved interaction proportion and this target.
-        Default is None.
+        A scalar is compared to every client; a sequence is aligned to
+        clients in ``client_ids_2_user_ids`` iteration order. Default
+        is None.
     """
     user_counts = np.asarray(
         [len(users) for users in client_ids_2_user_ids.values()], dtype=float
@@ -184,17 +186,23 @@ def _log_partition_sizes(
         total = float(interaction_counts.sum())
         if total > 0:
             proportions = interaction_counts / total
-            max_gap = float(
-                np.max(np.abs(proportions - target_interaction_proportion))
-            )
+            targets = np.asarray(target_interaction_proportion, dtype=float)
+            max_gap = float(np.max(np.abs(proportions - targets)))
         else:
             max_gap = 0.0
-        logging.info(
-            "client partition interaction proportion max gap vs target "
-            "%.6f: %.6f",
-            target_interaction_proportion,
-            max_gap,
-        )
+        if np.ndim(target_interaction_proportion) == 0:
+            logging.info(
+                "client partition interaction proportion max gap vs target "
+                "%.6f: %.6f",
+                float(target_interaction_proportion),
+                max_gap,
+            )
+        else:
+            logging.info(
+                "client partition interaction proportion max gap vs "
+                "Dirichlet targets: %.6f",
+                max_gap,
+            )
 
 
 class CrossDevicePartitionStrategy(BaseClientPartitionStrategy):
@@ -469,6 +477,276 @@ class RandomUserPartitionStrategy(BaseClientPartitionStrategy):
         for user_id in shuffled_users:
             uid = int(user_id)
             deficits = target - sizes
+            client_id = int(np.argmax(deficits))
+            user_to_client[uid] = client_id
+            sizes[client_id] += float(counts_by_user[uid])
+        return user_to_client
+
+
+class DirichletUserPartitionStrategy(BaseClientPartitionStrategy):
+    """Assign whole users to clients with Dirichlet quantity skew.
+
+    Users are sorted, shuffled with a private NumPy generator, then
+    assigned so that client sizes follow a symmetric Dirichlet draw.
+    Small ``alpha`` yields a few large clients and many small ones;
+    large ``alpha`` approaches equal sizes.
+
+    With ``size_by="interactions"`` (default) each client is seeded
+    with one user, then remaining users are greedy-filled toward
+    interaction targets ``p_k * N_train``. With ``size_by="users"``
+    extra user counts are drawn from a Multinomial, so final user
+    counts are exactly ``1 + m_k``.
+
+    Cross-silo settings use ``1 ≤ num_clients < num_users``. Setting
+    ``num_clients`` equal to the number of training users yields one
+    user per client; ``alpha`` and ``size_by`` then have no effect.
+    Setting ``num_clients`` to ``1`` places every user on a single
+    client.
+
+    Parameters
+    ----------
+    num_clients : int
+        Number of clients. Must be an integer ``>= 1``. The value must
+        also satisfy ``num_clients <=`` the number of distinct training
+        users when :meth:`partition` runs.
+    alpha : float
+        Positive concentration of the symmetric Dirichlet. Must be
+        ``> 0``.
+    size_by : {"interactions", "users"}, optional
+        Quantity to skew across clients. ``"interactions"`` (default)
+        greedy-fills against Dirichlet interaction targets.
+        ``"users"`` draws Multinomial user counts.
+    seed : int or None, optional
+        Seed for the strategy's ``numpy.random.Generator``. ``None``
+        leaves the generator unseeded. Default is None.
+    user_col : str, optional
+        User-id column in the training frame. Default is ``"user_id"``.
+    metadata : dict or None, optional
+        Stored on the strategy and copied onto the returned partition.
+        Default is None.
+
+    Raises
+    ------
+    ValueError
+        If ``num_clients`` is not an integer ``>= 1``, ``alpha`` is not
+        a positive real number, or ``size_by`` is not ``"interactions"``
+        or ``"users"``. :meth:`partition` also raises if ``user_col`` is
+        missing or ``num_clients`` exceeds the number of distinct
+        training users.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({
+    ...     "user_id": [0, 0, 1, 2, 2, 3],
+    ...     "item_id": [10, 11, 10, 12, 13, 10],
+    ... })
+    >>> strategy = DirichletUserPartitionStrategy(2, alpha=0.5, seed=0)
+    >>> part = strategy.partition(df)
+    >>> part.num_clients
+    2
+    >>> sorted(part.user_ids_2_client_ids)
+    [0, 1, 2, 3]
+    """
+
+    def __init__(
+        self,
+        num_clients: int,
+        alpha: float,
+        size_by: str = "interactions",
+        seed: int | None = None,
+        user_col: str = "user_id",
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
+        if (
+            not isinstance(num_clients, int)
+            or isinstance(num_clients, bool)
+            or num_clients < 1
+        ):
+            raise ValueError(
+                f"num_clients must be an integer >= 1, got {num_clients!r}"
+            )
+        if isinstance(alpha, bool) or not isinstance(alpha, (int, float)):
+            raise ValueError(
+                f"alpha must be a positive real number, got {alpha!r}"
+            )
+        if float(alpha) <= 0.0:
+            raise ValueError(
+                f"alpha must be a positive real number, got {alpha!r}"
+            )
+        if size_by not in {"interactions", "users"}:
+            raise ValueError(
+                "size_by must be 'interactions' or 'users', "
+                f"got {size_by!r}"
+            )
+        super().__init__(
+            num_clients=num_clients, user_col=user_col, metadata=metadata
+        )
+        self.alpha = float(alpha)
+        self.size_by = size_by
+        self.seed = seed
+
+    def partition(self, train_interactions: pd.DataFrame) -> ClientPartition:
+        """Assign every training user to one client and build the partition.
+
+        Parameters
+        ----------
+        train_interactions : pandas.DataFrame
+            Training interactions. Must contain ``self.user_col``.
+
+        Returns
+        -------
+        ClientPartition
+            Partition over ``self.num_clients`` clients.
+
+        Raises
+        ------
+        ValueError
+            If ``user_col`` is missing, or there are fewer distinct
+            training users than ``num_clients``.
+        """
+        if self.user_col not in train_interactions.columns:
+            raise ValueError(
+                f"train_interactions must contain a '{self.user_col}' "
+                "column with user identifiers"
+            )
+
+        user_ids = np.sort(
+            train_interactions[self.user_col].unique().astype(np.int64)
+        )
+        num_users = int(user_ids.size)
+        if self.num_clients > num_users:
+            raise ValueError(
+                f"num_clients ({self.num_clients}) must be <= number of "
+                f"distinct training users ({num_users})"
+            )
+
+        if self.num_clients == num_users:
+            logging.warning(
+                "DirichletUserPartitionStrategy: num_clients equals the "
+                "number of training users (%s); alpha and size_by have "
+                "no effect",
+                num_users,
+            )
+
+        rng = np.random.default_rng(self.seed)
+        shuffled = user_ids.copy()
+        rng.shuffle(shuffled)
+        proportions = rng.dirichlet(
+            np.full(self.num_clients, self.alpha, dtype=np.float64)
+        )
+
+        user_interaction_counts = (
+            train_interactions.groupby(self.user_col).size().astype(np.int64)
+        )
+        counts_by_user = {
+            int(uid): int(user_interaction_counts.loc[uid])
+            for uid in user_ids
+        }
+
+        if self.size_by == "users":
+            user_to_client = self._assign_by_users(
+                shuffled, proportions, rng
+            )
+            target_proportion: float | Sequence[float] | None = None
+        else:
+            user_to_client = self._assign_by_interactions(
+                shuffled,
+                counts_by_user,
+                proportions,
+                n_train=len(train_interactions),
+            )
+            target_proportion = proportions
+
+        partition = _build_client_partition(
+            train_interactions,
+            self.user_col,
+            user_to_client,
+            self.num_clients,
+            metadata=self.metadata,
+        )
+        _log_partition_sizes(
+            partition.client_ids_2_user_ids,
+            partition.client_train_sizes,
+            target_interaction_proportion=target_proportion,
+        )
+        return partition
+
+    def _assign_by_users(
+        self,
+        shuffled_users: np.ndarray,
+        proportions: np.ndarray,
+        rng: np.random.Generator,
+    ) -> Dict[int, int]:
+        """Seed each client, then allocate Multinomial extra users.
+
+        Parameters
+        ----------
+        shuffled_users : numpy.ndarray
+            Shuffled user ids of length ``num_users``.
+        proportions : numpy.ndarray
+            Dirichlet proportions of length ``num_clients``.
+        rng : numpy.random.Generator
+            Generator used for the Multinomial draw.
+
+        Returns
+        -------
+        dict of int to int
+            Mapping from user id to client id. Final user counts are
+            exactly ``1 + m_k`` for Multinomial extras ``m``.
+        """
+        user_to_client: Dict[int, int] = {}
+        for client_id in range(self.num_clients):
+            user_to_client[int(shuffled_users[client_id])] = client_id
+
+        remaining = int(shuffled_users.size) - self.num_clients
+        if remaining > 0:
+            extras = rng.multinomial(remaining, proportions)
+            offset = self.num_clients
+            for client_id, extra_count in enumerate(extras):
+                count = int(extra_count)
+                for user_id in shuffled_users[offset : offset + count]:
+                    user_to_client[int(user_id)] = client_id
+                offset += count
+        return user_to_client
+
+    def _assign_by_interactions(
+        self,
+        shuffled_users: np.ndarray,
+        counts_by_user: Mapping[int, int],
+        proportions: np.ndarray,
+        n_train: int,
+    ) -> Dict[int, int]:
+        """Seed each client, then greedy-fill toward Dirichlet targets.
+
+        Parameters
+        ----------
+        shuffled_users : numpy.ndarray
+            Shuffled user ids.
+        counts_by_user : mapping of int to int
+            Training interaction count per user.
+        proportions : numpy.ndarray
+            Dirichlet proportions of length ``num_clients``.
+        n_train : int
+            Total number of training interactions.
+
+        Returns
+        -------
+        dict of int to int
+            Mapping from user id to client id.
+        """
+        targets = proportions * float(n_train)
+        sizes = np.zeros(self.num_clients, dtype=np.float64)
+        user_to_client: Dict[int, int] = {}
+
+        for client_id in range(self.num_clients):
+            uid = int(shuffled_users[client_id])
+            user_to_client[uid] = client_id
+            sizes[client_id] += float(counts_by_user[uid])
+
+        for user_id in shuffled_users[self.num_clients :]:
+            uid = int(user_id)
+            deficits = targets - sizes
             client_id = int(np.argmax(deficits))
             user_to_client[uid] = client_id
             sizes[client_id] += float(counts_by_user[uid])

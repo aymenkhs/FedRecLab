@@ -1,10 +1,13 @@
-"""Tests for RandomUserPartitionStrategy and shared partition helpers."""
+"""Tests for user partition strategies and shared partition helpers."""
+
+import logging
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.fedreclab.data.client_partitioning import (
+    DirichletUserPartitionStrategy,
     RandomUserPartitionStrategy,
     _build_client_partition,
 )
@@ -178,3 +181,169 @@ def test_build_client_partition_helper_sorts_users_and_sizes():
     assert part.client_to_train_indices[0] == [6, 7]
     assert part.client_to_train_indices[1] == [5, 8]
     assert part.client_train_sizes == {0: 2, 1: 2}
+
+
+def test_dirichlet_constructor_rejects_invalid_num_clients():
+    with pytest.raises(ValueError, match="num_clients"):
+        DirichletUserPartitionStrategy(0, alpha=0.5)
+    with pytest.raises(ValueError, match="num_clients"):
+        DirichletUserPartitionStrategy(-1, alpha=0.5)
+    with pytest.raises(ValueError, match="num_clients"):
+        DirichletUserPartitionStrategy(1.5, alpha=0.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="num_clients"):
+        DirichletUserPartitionStrategy(True, alpha=0.5)  # type: ignore[arg-type]
+
+
+def test_dirichlet_constructor_rejects_invalid_alpha():
+    with pytest.raises(ValueError, match="alpha"):
+        DirichletUserPartitionStrategy(2, alpha=0.0)
+    with pytest.raises(ValueError, match="alpha"):
+        DirichletUserPartitionStrategy(2, alpha=-1.0)
+    with pytest.raises(ValueError, match="alpha"):
+        DirichletUserPartitionStrategy(2, alpha=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="alpha"):
+        DirichletUserPartitionStrategy(2, alpha="0.5")  # type: ignore[arg-type]
+
+
+def test_dirichlet_constructor_rejects_invalid_size_by_and_defaults():
+    with pytest.raises(ValueError, match="size_by"):
+        DirichletUserPartitionStrategy(2, alpha=0.5, size_by="rows")
+    strategy = DirichletUserPartitionStrategy(2, alpha=0.5)
+    assert strategy.size_by == "interactions"
+    assert strategy.alpha == 0.5
+
+
+def test_dirichlet_partition_rejects_too_many_clients():
+    df = _toy_frame()
+    strategy = DirichletUserPartitionStrategy(7, alpha=0.5, seed=0)
+    with pytest.raises(ValueError, match="num_clients"):
+        strategy.partition(df)
+
+
+def test_dirichlet_users_mode_matches_multinomial_oracle():
+    df = _toy_frame()
+    num_clients = 3
+    alpha = 0.5
+    seed = 11
+    part = DirichletUserPartitionStrategy(
+        num_clients, alpha=alpha, size_by="users", seed=seed
+    ).partition(df)
+
+    user_ids = np.sort(df["user_id"].unique().astype(np.int64))
+    rng = np.random.default_rng(seed)
+    shuffled = user_ids.copy()
+    rng.shuffle(shuffled)
+    proportions = rng.dirichlet(np.full(num_clients, alpha, dtype=np.float64))
+    extras = rng.multinomial(int(user_ids.size) - num_clients, proportions)
+
+    expected: dict[int, int] = {}
+    for client_id in range(num_clients):
+        expected[int(shuffled[client_id])] = client_id
+    offset = num_clients
+    for client_id, extra_count in enumerate(extras):
+        for user_id in shuffled[offset : offset + int(extra_count)]:
+            expected[int(user_id)] = client_id
+        offset += int(extra_count)
+
+    assert part.user_ids_2_client_ids == expected
+    assert sorted(part.user_ids_2_client_ids) == list(range(6))
+    for client_id in range(num_clients):
+        users = part.client_ids_2_user_ids[client_id]
+        assert users == sorted(users)
+        assert len(users) == 1 + int(extras[client_id])
+        assert len(users) > 0
+
+
+def test_dirichlet_interactions_mode_matches_greedy_oracle():
+    df = _toy_frame()
+    num_clients = 3
+    alpha = 0.3
+    seed = 7
+    part = DirichletUserPartitionStrategy(
+        num_clients, alpha=alpha, size_by="interactions", seed=seed
+    ).partition(df)
+
+    user_ids = np.sort(df["user_id"].unique().astype(np.int64))
+    counts = df.groupby("user_id").size().astype(np.int64)
+    counts_by_user = {int(uid): int(counts.loc[uid]) for uid in user_ids}
+    rng = np.random.default_rng(seed)
+    shuffled = user_ids.copy()
+    rng.shuffle(shuffled)
+    proportions = rng.dirichlet(np.full(num_clients, alpha, dtype=np.float64))
+    targets = proportions * float(len(df))
+    sizes = np.zeros(num_clients, dtype=np.float64)
+    expected: dict[int, int] = {}
+    for client_id in range(num_clients):
+        uid = int(shuffled[client_id])
+        expected[uid] = client_id
+        sizes[client_id] += float(counts_by_user[uid])
+    for user_id in shuffled[num_clients:]:
+        uid = int(user_id)
+        client_id = int(np.argmax(targets - sizes))
+        expected[uid] = client_id
+        sizes[client_id] += float(counts_by_user[uid])
+
+    assert part.user_ids_2_client_ids == expected
+    assert all(
+        len(part.client_ids_2_user_ids[c]) > 0 for c in range(num_clients)
+    )
+    assert sorted(part.user_ids_2_client_ids) == list(range(6))
+
+
+def test_dirichlet_same_seed_is_stable_and_row_order_independent():
+    df = _toy_frame()
+    strategy = DirichletUserPartitionStrategy(
+        3, alpha=0.5, size_by="users", seed=42
+    )
+    first = strategy.partition(df)
+    second = strategy.partition(df)
+    assert first.user_ids_2_client_ids == second.user_ids_2_client_ids
+
+    reversed_df = df.iloc[::-1].copy()
+    from_reversed = strategy.partition(reversed_df)
+    assert from_reversed.user_ids_2_client_ids == first.user_ids_2_client_ids
+
+
+def test_dirichlet_seed_none_stays_none_and_does_not_touch_global_numpy_state():
+    df = _toy_frame()
+    state_before = np.random.get_state()
+    strategy = DirichletUserPartitionStrategy(3, alpha=0.5, seed=None)
+    assert strategy.seed is None
+    strategy.partition(df)
+    assert strategy.seed is None
+    state_after = np.random.get_state()
+    assert state_before[0] == state_after[0]
+    np.testing.assert_array_equal(state_before[1], state_after[1])
+
+
+def test_dirichlet_num_clients_one_puts_every_user_on_client_zero():
+    df = _toy_frame()
+    part = DirichletUserPartitionStrategy(1, alpha=0.5, seed=0).partition(df)
+    assert part.num_clients == 1
+    assert part.client_ids_2_user_ids[0] == list(range(6))
+    assert set(part.user_ids_2_client_ids.values()) == {0}
+    assert part.client_train_sizes[0] == len(df)
+
+
+def test_dirichlet_num_clients_equals_num_users_warns_and_one_each(caplog):
+    df = _toy_frame()
+    with caplog.at_level(logging.WARNING):
+        part = DirichletUserPartitionStrategy(
+            6, alpha=0.1, size_by="interactions", seed=0
+        ).partition(df)
+    assert part.num_clients == 6
+    for client_id in range(6):
+        assert len(part.client_ids_2_user_ids[client_id]) == 1
+    assert any(
+        "alpha and size_by have no effect" in record.message
+        for record in caplog.records
+    )
+
+
+def test_dirichlet_metadata_is_copied_onto_partition():
+    df = _toy_frame()
+    meta = {"source": "dirichlet-unit-test"}
+    part = DirichletUserPartitionStrategy(
+        2, alpha=1.0, seed=0, metadata=meta
+    ).partition(df)
+    assert part.metadata == meta
