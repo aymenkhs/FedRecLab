@@ -36,6 +36,12 @@ from src.fedreclab.methods.semidfegl.semidfegl_model import (
 class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
     """Local training and scoring for SemiDFEGL.
 
+    The user embedding is updated with Adam whose moments persist in
+    ``ClientState``. Item rows are updated with SGD at the same ``lr``
+    and ``adam_weight_decay`` as weight decay. Item moments cannot be
+    kept on the device (no resident item table); a fresh Adam state each
+    round with ``local_epochs=1`` would reduce to signSGD on items.
+
     Parameters
     ----------
     embedding_dim : int, optional
@@ -43,11 +49,11 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
     num_layers : int, optional
         LightGCN depth ``K``. Default 4.
     local_epochs : int, optional
-        Local Adam passes per round. Default 1.
+        Local passes over the BPR objective per round. Default 1.
     lr : float, optional
-        Adam learning rate. Default ``0.001``.
+        Learning rate for user Adam and item SGD. Default ``0.001``.
     adam_weight_decay : float, optional
-        Adam weight decay. Default ``1e-4``.
+        Weight decay for user Adam and item SGD. Default ``1e-4``.
     bpr_reg : float, optional
         Extra L2 on layer-0 user and scored item rows. Default ``0.0``.
     fake_items_as_negatives : bool, optional
@@ -319,18 +325,23 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
             neighbor_degrees_np, dtype=torch.float32, device=device
         )
 
-        optim_params = [user_emb, graph_emb]
-        if neg_only_emb is not None:
-            optim_params.append(neg_only_emb)
-
-        optimizer = torch.optim.Adam(
-            optim_params,
+        # Adam on the resident user embedding; SGD on round-local items.
+        # A fresh Adam state on items with one full-batch step is ≈ signSGD.
+        user_optimizer = torch.optim.Adam(
+            [user_emb],
             lr=self.lr,
             weight_decay=self.adam_weight_decay,
         )
-        # Restore only the user moments; item moments are round-local.
+        item_params = [graph_emb]
+        if neg_only_emb is not None:
+            item_params.append(neg_only_emb)
+        item_optimizer = torch.optim.SGD(
+            item_params,
+            lr=self.lr,
+            weight_decay=self.adam_weight_decay,
+        )
         restore_named_optimizer_state(
-            optimizer,
+            user_optimizer,
             {"user_embedding": user_emb},
             training_request.client_state.optimizer_state,
         )
@@ -349,7 +360,8 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
         num_training_examples = 0
 
         for _ in range(self.local_epochs):
-            optimizer.zero_grad()
+            user_optimizer.zero_grad()
+            item_optimizer.zero_grad()
             user_c, item_c = propagate_semidfegl(
                 user_emb0=user_emb,
                 item_emb0=graph_emb,
@@ -394,7 +406,8 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
                     f"{training_request.client_id}: {float(bpr.detach().cpu())}"
                 )
             bpr.backward()
-            optimizer.step()
+            user_optimizer.step()
+            item_optimizer.step()
             all_losses.append(float(bpr.detach().cpu()))
             num_training_examples += int(train_ids.size) * int(neg_scores.numel())
 
@@ -454,7 +467,7 @@ class SemiDFEGLClientAlgorithm(BaseClientAlgorithm):
         }
 
         user_state = extract_named_optimizer_state(
-            optimizer,
+            user_optimizer,
             {"user_embedding": user_emb},
             names_to_keep=["user_embedding"],
         )

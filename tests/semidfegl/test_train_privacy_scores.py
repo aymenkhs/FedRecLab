@@ -20,6 +20,44 @@ def test_privacy_off_upload_is_exactly_loss_updated_rows(make_server):
     assert server.client_algorithm.apply_privacy(None, response) is response
 
 
+def test_item_sgd_step_is_not_sign_of_gradient(make_server):
+    """Fresh Adam on items with one step is ±lr; SGD keeps |Δ| = lr|g|."""
+    client = SemiDFEGLClientAlgorithm(
+        embedding_dim=4, num_layers=1, lr=1e-3, adam_weight_decay=0.0
+    )
+    server = make_server(client=client, num_layers=1)
+    server.current_round = 0
+    server._on_round_start_server()
+    payload = server._build_server_payload(0)
+    before = {
+        int(i): np.asarray(v, dtype=np.float64).copy()
+        for i, v in zip(payload["item_ids"], payload["item_embeddings"])
+    }
+    response = server._train_client(0, current_round=0)
+    upload = response.updates_packages["item_embeddings"].param_value
+    # Compare a non-graph BPR negative (layer-0 upload) so the delta is
+    # exactly the SGD parameter step, not LightGCN recombination.
+    train = set(int(i) for i in payload["train_item_ids"])
+    fake = set(int(i) for i in payload["fake_item_ids"])
+    neg_only = [
+        int(r)
+        for r in upload["rows"]
+        if int(r) not in train and int(r) not in fake
+    ]
+    assert neg_only, "expected at least one dedicated BPR negative"
+    row = neg_only[0]
+    after = None
+    for r, v in zip(upload["rows"], upload["values"]):
+        if int(r) == row:
+            after = np.asarray(v, dtype=np.float64)
+            break
+    delta = after - before[row]
+    abs_delta = np.abs(delta)
+    # signSGD would put every coordinate at exactly lr (weight_decay=0).
+    assert not np.allclose(abs_delta, client.lr, atol=1e-12)
+    assert np.any(abs_delta < client.lr - 1e-12)
+
+
 def test_uploaded_ego_dot_item_matches_compute_scores(make_server):
     """Eval must use the same vectors BPR uploaded (layer-combined)."""
     client = SemiDFEGLClientAlgorithm(embedding_dim=4, num_layers=2)
