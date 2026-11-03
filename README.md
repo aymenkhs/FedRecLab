@@ -14,8 +14,8 @@ FedRec papers ship code in different frameworks, with different splits, client p
 - **Federated core:** a round loop with hooks; per-parameter-group exchange rules (`ParamIO`); pluggable client selection and aggregation.
 - **Aggregators:** FedAvg, SimpleAvg, Median, TrimmedMean, FedAtt, Krum / Multi-Krum, Bulyan. Row-layout groups (`ParamIO.layout="rows"`) apply the same aggregator per embedding row.
 - **Evaluation:** full-ranking top-K metrics (HR, NDCG, Precision, Recall, …) computed per client.
-- **Methods:** FedNCF, FedVAE, FedMF. FedPerGNN is being repaired; CdFed, MetaMF, GPFedRec and SemiDFEGL are planned.
-
+- **Methods:** FedNCF, FedVAE, FedMF, GPFedRec, FedPerGNN, FedFast, EFVAE, MetaMF, SemiDFEGL.
+- 
 ## Install
 
 ```bash
