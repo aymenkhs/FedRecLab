@@ -6,7 +6,11 @@ name-keyed optimiser dict; that embedding is the source of truth for the
 owner's trajectory. The server user table is a mirror updated by the sparse
 upload each round (expansion / neighbours). With neighbor_embeddings_trainable,
 other clients can still write the owner's row in the mirror, but that no
-longer becomes this client's next starting point.
+longer becomes this client's next starting point. Those other-user rows are
+parameters of this round's Adam, initialised from the expansion payload.
+Repeated slots of one user share one vector, and the upload is that vector
+after the local epochs. Their moments are not kept: the mirror, not this
+client's optimiser, is the next round's starting point.
 
 Training task (``task``):
   ``"rating"`` (default) follows Wu et al.: MSE on observed ratings only,
@@ -27,12 +31,13 @@ Training task (``task``):
 optimizer_state_scope:
   - "client_resident" (default): persist Adam moments for the owner row
   - "none": no optimiser state is kept
-  - "all": persist moments for every assembled parameter (memory-heavy)
+  - "all": persist moments for every assembled parameter (memory-heavy).
+    Neighbour rows are not assembled parameters. They are re-initialised
+    from the payload every round, so their moments are never stored.
 """
 
 import logging
 import time
-from collections import defaultdict
 from typing import Dict, Any, Tuple, List
 
 import numpy as np
@@ -87,9 +92,13 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
     batch_size : int, optional
         Mini-batch size. Default is 128.
     neighbor_embeddings_trainable : bool, optional
-        If True, neighbour rows in the expansion payload receive a local
-        gradient step that is uploaded to the server mirror. Default is
-        False. The owner row is always trainable.
+        If True, each distinct other user in the expansion is an
+        ``nn.Parameter`` for this round. It is initialised from the
+        payload and updated by the same Adam as the owner embedding and
+        the GAT, on every local batch. The resulting rows are uploaded
+        to the server mirror. Default is False. The owner row is always
+        trainable and is not one of these parameters. Neighbour Adam
+        moments are not stored; the next round starts from the mirror.
     optimizer_state_scope : {"client_resident", "none", "all"}, optional
         Which Adam moments to persist in ``ClientState``. Default is
         ``"client_resident"``.
@@ -245,8 +254,6 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         model.train()
 
         named_params, user_emb = self._inject_user_parameter(client_state)
-        optimizer = torch.optim.Adam(list(model.parameters()) + [user_emb], lr=self.lr)
-        restore_named_optimizer_state(optimizer, named_params, client_state.optimizer_state)
 
         users_in_client = training_request.users_in_client
         central_user_id = int(users_in_client[0]) if users_in_client else 0
@@ -272,18 +279,36 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         else:
             neighbor_emb = None
 
-        sum_emb: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
-        sum_grad: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(self.hidden_dim, dtype=np.float32))
-        count_grad: Dict[int, int] = defaultdict(int)
-        count_emb: Dict[int, int] = defaultdict(int)
-        if self.neighbor_embeddings_trainable and neighbor_emb_np is not None and neighbor_user_ids_np is not None:
-            L, N = neighbor_user_ids_np.shape
-            for ell in range(L):
-                for n in range(N):
-                    uid = int(neighbor_user_ids_np[ell, n])
-                    if uid >= 0:
-                        sum_emb[uid] += neighbor_emb_np[ell, n, :]
-                        count_emb[uid] += 1
+        # Round-local rows. Moments are not restored: the payload, not
+        # the previous round's optimiser, is the starting point.
+        neighbour_param = None
+        neighbour_user_ids: List[int] = []
+        neighbour_index = None
+        frozen_slots = None
+        if (
+            self.neighbor_embeddings_trainable
+            and neighbor_emb_np is not None
+            and neighbor_user_ids_np is not None
+        ):
+            (
+                neighbour_param,
+                neighbour_user_ids,
+                neighbour_index,
+                frozen_slots,
+            ) = self._bind_neighbour_parameter(
+                neighbor_emb_np,
+                neighbor_user_ids_np,
+                central_user_id,
+                device,
+            )
+
+        optim_params = list(model.parameters()) + [user_emb]
+        if neighbour_param is not None:
+            optim_params.append(neighbour_param)
+        optimizer = torch.optim.Adam(optim_params, lr=self.lr)
+        restore_named_optimizer_state(
+            optimizer, named_params, client_state.optimizer_state
+        )
 
         all_losses: List[float] = []
         num_training_examples = 0
@@ -325,8 +350,10 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                     labels_np_shuffled[start:end], dtype=torch.float32, device=device
                 )
 
-                if neighbor_emb is not None and self.neighbor_embeddings_trainable:
-                    b_neighbor_emb = neighbor_emb.detach().requires_grad_(True)
+                if neighbour_param is not None:
+                    b_neighbor_emb = self._neighbor_embeddings_from_parameter(
+                        neighbour_param, neighbour_index, frozen_slots
+                    )
                 else:
                     b_neighbor_emb = neighbor_emb
 
@@ -342,19 +369,6 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                 preds = model.score(user_repr, b_item_ids)
                 loss = self._compute_loss(preds, b_labels)
                 loss.backward()
-
-                if self.neighbor_embeddings_trainable and b_neighbor_emb is not None and b_neighbor_emb.grad is not None and neighbor_user_ids_np is not None:
-                    grad_np = b_neighbor_emb.grad.detach().cpu().numpy()
-                    batch_count = int(b_item_ids.size(0))
-                    for ell in range(grad_np.shape[0]):
-                        for n in range(grad_np.shape[1]):
-                            uid = int(neighbor_user_ids_np[ell, n])
-                            if uid >= 0:
-                                # grad_np is the mean over this batch. The
-                                # upload divides by the number of examples.
-                                sum_grad[uid] += grad_np[ell, n, :]
-                                count_grad[uid] += batch_count
-
                 optimizer.step()
 
                 epoch_loss += loss.item()
@@ -371,7 +385,12 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
 
         item_rows = set(trained_item_ids)
         if history_items_np is not None:
-            item_rows.update(int(i) for i in np.asarray(history_items_np).reshape(-1))
+            # Negative ids are empty slots, not catalogue rows.
+            item_rows.update(
+                int(item_id)
+                for item_id in np.asarray(history_items_np).reshape(-1)
+                if int(item_id) >= 0
+            )
         item_upload = self._embedding_upload(
             training_request,
             "item_embeddings",
@@ -382,16 +401,13 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
         user_embedding_row = user_emb.detach().cpu().numpy()
         user_ids_list: List[int] = [central_user_id]
         embeddings_list: List[np.ndarray] = [np.asarray(user_embedding_row.squeeze(0), dtype=np.float32)]
-        if self.neighbor_embeddings_trainable and count_emb and count_grad:
-            for uid in count_emb:
-                if uid == central_user_id:
-                    continue
-                if count_grad[uid] > 0:
-                    mean_emb = sum_emb[uid] / count_emb[uid]
-                    mean_grad = sum_grad[uid] / count_grad[uid]
-                    updated = mean_emb - self.lr * mean_grad
-                    user_ids_list.append(uid)
-                    embeddings_list.append(np.asarray(updated, dtype=np.float32))
+        # No local batch means Adam never saw these rows. Uploading the
+        # payload again would vote the mirror value back into the average.
+        if neighbour_param is not None and optimizer.state.get(neighbour_param):
+            updated_rows = neighbour_param.detach().cpu().numpy()
+            for uid, row in zip(neighbour_user_ids, updated_rows):
+                user_ids_list.append(int(uid))
+                embeddings_list.append(np.asarray(row, dtype=np.float32))
 
         user_upload = self._embedding_upload(
             training_request,
@@ -1157,6 +1173,190 @@ class FedPerGNNClientAlgorithm(BaseClientAlgorithm):
                 )
             return table if not hasattr(table, "detach") else table.detach().cpu().clone()
         return {"rows": rows, "values": np.asarray(values, dtype=np.float32)}
+
+    def _bind_neighbour_parameter(
+        self,
+        neighbor_embeddings,
+        neighbor_user_ids,
+        owner_id: int,
+        device,
+    ):
+        """Build one Adam parameter per distinct neighbour user.
+
+        The server stores one row per user, so every slot that names the
+        same other user shares one vector. That vector starts at the
+        first payload row for the id. The owner is not included: that
+        trajectory is ``user_embedding.weight``. Negative ids are empty
+        slots. Both stay as constant payload vectors, added back in
+        :meth:`_neighbor_embeddings_from_parameter`. Index 0 of the
+        lookup is a zero row and is not a parameter, so padding has no
+        gradient.
+
+        The parameter is not registered on the skeleton. The caller
+        passes it to this round's optimiser and does not store its
+        moments.
+
+        Parameters
+        ----------
+        neighbor_embeddings : array_like
+            Payload rows, shape ``(L, N, H)``.
+        neighbor_user_ids : array_like
+            User ids, shape ``(L, N)``. Negative entries are empty slots.
+        owner_id : int
+            This client's user id. Slots with this id are not parameters.
+        device : torch.device
+            Device for the parameter and the lookup.
+
+        Returns
+        -------
+        param : torch.nn.Parameter or None
+            Shape ``(U, H)`` in first-seen order. ``None`` when no other
+            user's id is present.
+        user_ids : list of int
+            The ``U`` ids, aligned with ``param``.
+        index : torch.Tensor or None
+            Long tensor of shape ``(L, N)``. Entry ``0`` is the zero row;
+            entry ``k + 1`` reads ``param[k]``.
+        frozen_slots : torch.Tensor or None
+            Shape ``(L, N, H)``. Payload values for the owner and for
+            empty slots. ``None`` when every such slot is zero.
+
+        Raises
+        ------
+        ValueError
+            If the arrays are not ``(L, N, H)`` and ``(L, N)``, the width
+            is not ``hidden_dim``, ``device`` is missing, or one user id
+            is paired with two different payload rows.
+
+        Examples
+        --------
+        >>> client = FedPerGNNClientAlgorithm(hidden_dim=2)
+        >>> emb = np.zeros((2, 2, 2), dtype=np.float32)
+        >>> emb[0, 0] = (0.5, -0.25)
+        >>> emb[1, 0] = (0.1, 0.2)
+        >>> emb[1, 1] = (0.5, -0.25)
+        >>> ids = np.array([[4, -1], [0, 4]], dtype=np.int64)
+        >>> param, uids, index, frozen = client._bind_neighbour_parameter(
+        ...     emb, ids, owner_id=0, device=torch.device("cpu"))
+        >>> uids
+        [4]
+        >>> index.tolist()
+        [[1, 0], [0, 1]]
+        >>> round(float(frozen[1, 0, 0]), 4)
+        0.1
+        >>> emb2 = np.zeros((1, 2, 2), dtype=np.float32)
+        >>> emb2[0, 0] = (0.5, 0.0)
+        >>> emb2[0, 1] = (0.25, 0.0)
+        >>> client._bind_neighbour_parameter(
+        ...     emb2, np.array([[7, 7]]), 0, torch.device("cpu"))
+        Traceback (most recent call last):
+            ...
+        ValueError: neighbour user 7 has two different payload rows
+        """
+        embeddings = np.asarray(neighbor_embeddings, dtype=np.float32)
+        user_ids = np.asarray(neighbor_user_ids)
+        if embeddings.ndim != 3 or user_ids.ndim != 2:
+            raise ValueError(
+                "neighbour embeddings must have shape (L, N, H) and "
+                "neighbour user ids shape (L, N); "
+                f"got {embeddings.shape} and {user_ids.shape}"
+            )
+        if embeddings.shape[:2] != user_ids.shape:
+            raise ValueError(
+                "neighbour embeddings and user ids disagree on (L, N): "
+                f"{embeddings.shape[:2]} vs {tuple(user_ids.shape)}"
+            )
+        if embeddings.shape[-1] != self.hidden_dim:
+            raise ValueError(
+                f"neighbour embedding width {embeddings.shape[-1]} does not "
+                f"match hidden_dim {self.hidden_dim}"
+            )
+        if device is None:
+            raise ValueError("device is required to build neighbour parameters")
+
+        history_len, neighbor_len, _ = embeddings.shape
+        lookup = np.zeros((history_len, neighbor_len), dtype=np.int64)
+        frozen = np.array(embeddings, dtype=np.float32, copy=True)
+        order: List[int] = []
+        index_of: Dict[int, int] = {}
+        init_rows: List[np.ndarray] = []
+        owner = int(owner_id)
+
+        for ell in range(history_len):
+            for n in range(neighbor_len):
+                uid = int(user_ids[ell, n])
+                if uid < 0 or uid == owner:
+                    continue
+                row = np.asarray(embeddings[ell, n], dtype=np.float32).copy()
+                slot = index_of.get(uid)
+                if slot is None:
+                    slot = len(order)
+                    index_of[uid] = slot
+                    order.append(uid)
+                    init_rows.append(row)
+                elif not np.array_equal(init_rows[slot], row):
+                    raise ValueError(
+                        f"neighbour user {uid} has two different payload rows"
+                    )
+                lookup[ell, n] = slot + 1
+                frozen[ell, n] = 0
+
+        if not order:
+            return None, [], None, None
+
+        param = nn.Parameter(
+            torch.tensor(np.stack(init_rows), dtype=torch.float32, device=device)
+        )
+        index = torch.as_tensor(lookup, dtype=torch.long, device=device)
+        frozen_slots = None
+        if np.any(frozen):
+            frozen_slots = torch.tensor(frozen, dtype=torch.float32, device=device)
+        return param, order, index, frozen_slots
+
+    def _neighbor_embeddings_from_parameter(
+        self,
+        param: nn.Parameter,
+        index: torch.Tensor,
+        frozen_slots: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Gather shared neighbour rows into the ``(L, N, H)`` GAT input.
+
+        Parameters
+        ----------
+        param : torch.nn.Parameter
+            Distinct neighbour rows, shape ``(U, H)``.
+        index : torch.Tensor
+            Long tensor of shape ``(L, N)`` from
+            :meth:`_bind_neighbour_parameter`. ``0`` selects a zero row
+            that is not ``param``.
+        frozen_slots : torch.Tensor or None
+            Constant payload rows for the owner and for empty slots,
+            shape ``(L, N, H)``. Added to the gathered tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(L, N, H)``. Trainable slots read ``param``.
+
+        Examples
+        --------
+        >>> client = FedPerGNNClientAlgorithm(hidden_dim=2)
+        >>> param = nn.Parameter(torch.tensor([[0.5, -0.25]]))
+        >>> index = torch.tensor([[1, 0]])
+        >>> built = client._neighbor_embeddings_from_parameter(param, index, None)
+        >>> [round(v, 2) for v in built[0, 0].tolist()]
+        [0.5, -0.25]
+        >>> float(built[0, 1].detach().abs().sum())
+        0.0
+        """
+        # Index 0 is padding. It is not a row of ``param``, so empty
+        # slots do not receive a gradient.
+        zero = param.new_zeros(1, self.hidden_dim)
+        bank = torch.cat([zero, param], dim=0)
+        gathered = nn.functional.embedding(index, bank)
+        if frozen_slots is None:
+            return gathered
+        return gathered + frozen_slots
 
     def _inject_user_parameter(self, client_state: ClientStateBase):
         weight = client_state.local_parameters["user_embedding.weight"]

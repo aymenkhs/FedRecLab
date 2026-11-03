@@ -50,7 +50,8 @@ def test_rank_order_differs_across_users_with_the_same_candidates():
         num_items=8, hidden_dim=hidden_dim, history_len=3, neighbor_len=2
     )
     with torch.no_grad():
-        model.item_embeddings.weight.copy_(torch.eye(8, hidden_dim))
+        model.item_embeddings.weight.zero_()
+        model.item_embeddings.weight[1:].copy_(torch.eye(8, hidden_dim))
 
     candidates = torch.arange(1, 8)
     user_a = torch.zeros(hidden_dim)
@@ -84,7 +85,7 @@ def test_one_user_state_scores_every_candidate():
     model = FedPerGNNModel(
         num_items=6, hidden_dim=hidden, history_len=3, neighbor_len=2
     )
-    history = torch.tensor([1, 2, 0])
+    history = torch.tensor([1, 2, -1])
     user = torch.randn(hidden)
     neighbors = torch.randn(3, 2, hidden)
     neighbors[2] = 0
@@ -162,7 +163,7 @@ def test_shared_user_tower_matches_per_item_gradients():
     model = FedPerGNNModel(
         num_items=6, hidden_dim=hidden, history_len=3, neighbor_len=2
     )
-    history = torch.tensor([1, 2, 0])
+    history = torch.tensor([1, 2, -1])
     user = torch.nn.Parameter(torch.randn(hidden))
     neighbors = torch.nn.Parameter(torch.randn(3, 2, hidden))
     with torch.no_grad():

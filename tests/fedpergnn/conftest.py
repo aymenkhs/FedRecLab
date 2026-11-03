@@ -13,7 +13,7 @@ from src.fedreclab.methods.fedpergnn.fedpergnn_client import FedPerGNNClientAlgo
 def _expansion(hidden, hist, neigh):
     return {
         0: {
-            "history_item_ids": np.array([1, 2] + [0] * max(hist - 2, 0), dtype=np.int64)[:hist],
+            "history_item_ids": np.array([1, 2] + [-1] * max(hist - 2, 0), dtype=np.int64)[:hist],
             "neighbor_embeddings": np.zeros((hist, neigh, hidden), dtype=np.float32),
             "neighbor_user_ids": np.full((hist, neigh), -1, dtype=np.int64),
         }

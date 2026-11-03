@@ -57,7 +57,7 @@ def test_local_train_uses_client_state_row_not_the_server_table():
         extra_payload={
             "expanded_user_data": {
                 0: {
-                    "history_item_ids": np.zeros(hist, dtype=np.int64),
+                    "history_item_ids": np.full(hist, -1, dtype=np.int64),
                     "neighbor_embeddings": np.zeros(
                         (hist, neigh, hidden), dtype=np.float32
                     ),

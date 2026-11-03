@@ -76,7 +76,9 @@ def test_pseudo_sampling_requires_a_seed_and_enough_items(fedpergnn_client_and_r
     with pytest.raises(RuntimeError, match="seed"):
         client.apply_privacy(request, response)
 
-    client, request = fedpergnn_client_and_request(num_pseudo_items=4)
+    # Catalogue size is 6 and the client trains items 1 and 2, so four
+    # ids remain. Five pseudo items do not fit.
+    client, request = fedpergnn_client_and_request(num_pseudo_items=5)
     response = client.local_train(request)
     with pytest.raises(ValueError, match="pseudo items"):
         client.apply_privacy(request, response)

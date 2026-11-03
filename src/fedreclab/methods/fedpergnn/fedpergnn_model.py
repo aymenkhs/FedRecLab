@@ -31,7 +31,9 @@ class FedPerGNNModel(nn.Module):
     Parameters
     ----------
     num_items : int
-        Catalogue size after ``InteractionDataset`` remapping.
+        Catalogue size after ``InteractionDataset`` remapping. The
+        embedding has ``num_items + 1`` rows: index 0 is padding and
+        catalogue item ``i`` is row ``i + 1``.
     hidden_dim : int
         Width of embeddings and GAT hidden states.
     history_len : int
@@ -60,8 +62,12 @@ class FedPerGNNModel(nn.Module):
         self.history_len = history_len
         self.neighbor_len = neighbor_len
 
-        # Item embedding table (server-side parameter)
-        self.item_embeddings = nn.Embedding(num_items, hidden_dim)
+        # Row 0 is padding. Catalogue item i is row i + 1, so item 0
+        # is not the padding token. Callers mark an empty history slot
+        # with -1; the lookup adds 1 and lands on this row.
+        self.item_embeddings = nn.Embedding(
+            num_items + 1, hidden_dim, padding_idx=0
+        )
 
         # Dense used to project history item embeddings (uiemb in Keras code).
         self.history_item_proj = nn.Linear(hidden_dim, hidden_dim)
@@ -99,6 +105,11 @@ class FedPerGNNModel(nn.Module):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+        # normal_ fills the padding row as well. padding_idx only blocks
+        # its gradient; a nonzero value would still mix into a history
+        # that is entirely padding.
+        with torch.no_grad():
+            self.item_embeddings.weight[0].zero_()
 
     ITEM_EMBEDDING_NAME = "item_embeddings.weight"
 
@@ -116,10 +127,31 @@ class FedPerGNNModel(nn.Module):
         return state
 
     def get_item_embeddings(self) -> torch.Tensor:
-        return self.item_embeddings.weight.data.detach().cpu().clone()
+        """Catalogue item table, without the padding row.
+
+        Returns
+        -------
+        torch.Tensor
+            CPU float tensor of shape ``(num_items, hidden_dim)``.
+            Row ``i`` is catalogue item ``i`` (module row ``i + 1``).
+
+        Examples
+        --------
+        >>> m = FedPerGNNModel(num_items=2, hidden_dim=1, history_len=1, neighbor_len=1)
+        >>> m.load_item_embeddings(torch.tensor([[3.0], [4.0]]))
+        >>> m.get_item_embeddings()[:, 0].tolist()
+        [3.0, 4.0]
+        """
+        return self.item_embeddings.weight.detach()[1:].cpu().clone()
 
     def get_server_state(self) -> dict:
-        """Every skeleton parameter and buffer, including the item table."""
+        """Every skeleton tensor name, with the catalogue item table.
+
+        ``item_embeddings.weight`` here is the table from
+        :meth:`get_item_embeddings`, shape ``(num_items, hidden_dim)``.
+        The module parameter has one extra padding row, which is not
+        included.
+        """
         state = self.get_model_state()
         state[self.ITEM_EMBEDDING_NAME] = self.get_item_embeddings()
         return state
@@ -129,10 +161,39 @@ class FedPerGNNModel(nn.Module):
         self._load_named(server_state, exclude={self.ITEM_EMBEDDING_NAME})
 
     def load_item_embeddings(self, table) -> None:
-        """Load the item table from a full ``(|I|, d)`` tensor or ndarray."""
+        """Load the catalogue item table into embedding rows ``1:``.
+
+        Parameters
+        ----------
+        table : torch.Tensor or array_like
+            Shape ``(num_items, hidden_dim)``. Row ``i`` is catalogue
+            item ``i``. The padding row at index 0 is set to zero and
+            is not read from ``table``.
+
+        Raises
+        ------
+        ValueError
+            If ``table`` does not have shape ``(num_items, hidden_dim)``.
+
+        Examples
+        --------
+        >>> m = FedPerGNNModel(num_items=2, hidden_dim=1, history_len=1, neighbor_len=1)
+        >>> m.load_item_embeddings(torch.tensor([[3.0], [4.0]]))
+        >>> m.item_embeddings.weight[:, 0].tolist()
+        [0.0, 3.0, 4.0]
+        """
         weight = self.item_embeddings.weight
         tensor = table if isinstance(table, torch.Tensor) else torch.as_tensor(table)
-        weight.data.copy_(tensor.to(device=weight.device, dtype=weight.dtype))
+        tensor = tensor.to(device=weight.device, dtype=weight.dtype)
+        expected = (self.num_items, self.hidden_dim)
+        if tuple(tensor.shape) != expected:
+            raise ValueError(
+                "item embedding table must have shape "
+                f"{expected}; got {tuple(tensor.shape)}"
+            )
+        with torch.no_grad():
+            weight[1:].copy_(tensor)
+            weight[0].zero_()
 
     def _load_named(self, server_state: dict, exclude: set[str]) -> None:
         def as_tensor(x):
@@ -164,8 +225,10 @@ class FedPerGNNModel(nn.Module):
         Parameters
         ----------
         history_item_ids : torch.Tensor
-            Padded history ids, shape ``(L,)``, dtype int64. Item id 0
-            is treated as a padded history position.
+            History ids, shape ``(L,)``, dtype int64. A negative entry
+            is an empty slot. A non-negative entry is a catalogue id,
+            including 0. The lookup adds 1, so an empty slot reads
+            padding row 0 and catalogue item ``i`` reads row ``i + 1``.
         user_embedding : torch.Tensor
             Client-resident owner row, shape ``(H,)`` or ``(1, H)``.
         neighbor_embeddings : torch.Tensor or None, optional
@@ -189,7 +252,7 @@ class FedPerGNNModel(nn.Module):
         Examples
         --------
         >>> m = FedPerGNNModel(num_items=5, hidden_dim=4, history_len=2, neighbor_len=1)
-        >>> h = m.user_representation(torch.tensor([1, 2]), torch.zeros(4))
+        >>> h = m.user_representation(torch.tensor([0, -1]), torch.zeros(4))
         >>> tuple(h.shape)
         (4,)
         """
@@ -205,7 +268,9 @@ class FedPerGNNModel(nn.Module):
                 f"got shape {tuple(user_embedding.shape)}"
             )
 
-        hist_item_emb = self.item_embeddings(history_item_ids)  # (L, H)
+        # -1 is an empty slot and lands on the padding row. Catalogue
+        # id 0 lands on row 1.
+        hist_item_emb = self.item_embeddings(history_item_ids + 1)  # (L, H)
         hist_item_emb = torch.sigmoid(self.history_item_proj(hist_item_emb))
 
         if neighbor_embeddings is not None:
@@ -247,9 +312,9 @@ class FedPerGNNModel(nn.Module):
         hist_att_input = torch.cat([u_expanded, hist_repr], dim=-1)  # (L, 2H)
         hist_scores = self.history_att_mlp(hist_att_input).squeeze(-1)  # (L,)
 
-        # Padded history positions use item id 0.
+        # Empty slots are negative. Catalogue id 0 stays in the softmax.
         with torch.no_grad():
-            hist_mask = (history_item_ids != 0).to(hist_scores.dtype)
+            hist_mask = (history_item_ids >= 0).to(hist_scores.dtype)
         hist_scores = hist_scores + (1.0 - hist_mask) * (-1e4)
         hist_att = F.softmax(hist_scores, dim=-1)  # (L,)
         u_hist = (hist_att.unsqueeze(-1) * hist_repr).sum(dim=0)  # (H,)
@@ -263,7 +328,8 @@ class FedPerGNNModel(nn.Module):
         user_repr : torch.Tensor
             Output of ``user_representation``, shape ``(H,)`` or ``(1, H)``.
         item_ids : torch.Tensor
-            Target item ids, shape ``(B,)``, dtype int64.
+            Catalogue item ids, shape ``(B,)``, dtype int64. Lookup
+            adds 1, so id 0 reads embedding row 1, not the padding row.
 
         Returns
         -------
@@ -294,7 +360,7 @@ class FedPerGNNModel(nn.Module):
                 f"user_repr must have {self.hidden_dim} elements; "
                 f"got shape {tuple(user_repr.shape)}"
             )
-        item_emb = self.item_embeddings(item_ids)  # (B, H)
+        item_emb = self.item_embeddings(item_ids + 1)  # (B, H)
         return (item_emb * u).sum(dim=-1)
 
     def forward(
@@ -312,9 +378,11 @@ class FedPerGNNModel(nn.Module):
         Parameters
         ----------
         item_ids : torch.Tensor
-            Target item ids, shape ``(B,)``, dtype int64.
+            Catalogue item ids, shape ``(B,)``, dtype int64. Lookup
+            adds 1, so id 0 reads embedding row 1, not the padding row.
         history_item_ids : torch.Tensor
-            Padded history ids, shape ``(L,)``, dtype int64.
+            History ids, shape ``(L,)``, dtype int64. Negative entries
+            are empty slots. Non-negative entries are catalogue ids.
         user_embedding : torch.Tensor
             Client-resident owner row, shape ``(H,)`` or ``(1, H)``.
         neighbor_embeddings : torch.Tensor or None, optional

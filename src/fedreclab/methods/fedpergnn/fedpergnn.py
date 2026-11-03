@@ -38,7 +38,9 @@ class FedPerGNN(BaseFederatedServer):
       mirror (neighbour lookup). Each client's own embedding lives in
       ClientState and is uploaded every round. neighbour_embeddings_trainable
       still lets other clients propose edits to your row in the mirror; those
-      edits no longer become your next local starting point. Plaintext sparse
+      edits no longer become your next local starting point. A trainable
+      neighbour proposal is that row after the same local Adam steps as
+      the proposer's owner embedding. Plaintext sparse
       item uploads reveal which items this client trained on.
 
     Deviations from Wu et al.:
@@ -70,6 +72,12 @@ class FedPerGNN(BaseFederatedServer):
       covariance is singular when a user has fewer interactions than
       the embedding width.
 
+    Empty history slots are -1, not catalogue id 0. Id 0 stays in the
+    history, expands to neighbours, and is uploaded only when this
+    client trains it or lists it in that history. The module keeps a
+    padding row at embedding index 0; that row is not part of the
+    exchanged item table. Catalogue item ``i`` is embedding row ``i + 1``.
+
     Neighbour expansion and the initial user table use ``expansion_seed`` if
     set, otherwise the server ``seed``. Both default to None (unseeded).
     """
@@ -99,7 +107,8 @@ class FedPerGNN(BaseFederatedServer):
         self.expansion_seed = expansion_seed
 
         # Expansion cache (integer structure only):
-        # client_id -> {"history_item_ids": (L,), "neighbor_user_ids": (L,N)}
+        # client_id -> {"history_item_ids": (L,) with -1 padding,
+        #               "neighbor_user_ids": (L, N) with -1 padding}
         self._expansion_cache: Dict[int, Dict[str, np.ndarray]] = {}
 
         # Precomputed indices for fast expansion construction
@@ -189,12 +198,57 @@ class FedPerGNN(BaseFederatedServer):
         user_groups = df_sorted.groupby("user_id")["item_id"].apply(lambda x: x.values.astype(np.int64))
         self._user_to_items = {int(user_id): items for user_id, items in user_groups.items()}
 
+    def _pad_history(self, item_ids: np.ndarray) -> np.ndarray:
+        """Right-pad catalogue ids with -1 up to ``history_len``.
+
+        Parameters
+        ----------
+        item_ids : ndarray
+            Catalogue ids in history order. Id 0 is a real item. Longer
+            inputs keep the last ``history_len`` ids.
+
+        Returns
+        -------
+        ndarray of int64
+            Shape ``(history_len,)``. Entries equal to -1 are empty slots.
+
+        Raises
+        ------
+        ValueError
+            If any id is negative. Negative values are reserved for the
+            empty-slot marker.
+
+        Examples
+        --------
+        >>> server = FedPerGNN.__new__(FedPerGNN)
+        >>> server.history_len = 3
+        >>> server._pad_history(np.array([0, 2])).tolist()
+        [0, 2, -1]
+        """
+        ids = np.asarray(item_ids, dtype=np.int64).reshape(-1)
+        if ids.size > self.history_len:
+            ids = ids[-self.history_len :]
+        if np.any(ids < 0):
+            raise ValueError(
+                "history item ids must be catalogue ids >= 0; "
+                "negative ids are reserved for empty history slots"
+            )
+        hist = np.full(self.history_len, -1, dtype=np.int64)
+        hist[: ids.size] = ids
+        return hist
+
     def _construct_expanded_users(self):
         """
         Construct and cache expansion structure.
 
         Override this method to implement custom expansion logic (clustering,
         periodic refresh, etc.).
+
+        Histories built from training interactions keep catalogue id 0 and
+        fill unused slots with -1. A caller-supplied ``history_item_ids``
+        array is cropped to ``history_len`` and the tail is filled with -1.
+        Id 0 in that array is catalogue item 0. Mark an empty slot with
+        -1 so it stays aligned with a caller-supplied neighbour array.
 
         If `expanded_users` / `history_item_ids` were provided at init time,
         they are used directly; otherwise we compute them from train interactions.
@@ -213,17 +267,17 @@ class FedPerGNN(BaseFederatedServer):
                 continue
             user_id = int(users_in_client[0])
 
-            # History item ids
+            # History item ids. -1 is an empty slot; 0 is a catalogue item.
             if self._provided_history_item_ids is not None and client_id in self._provided_history_item_ids:
-                hist = np.asarray(self._provided_history_item_ids[client_id], dtype=np.int64)
-                hist = hist[: self.history_len]
-                if hist.shape[0] < self.history_len:
-                    hist = np.pad(hist, (0, self.history_len - hist.shape[0]), constant_values=0)
+                supplied = np.asarray(
+                    self._provided_history_item_ids[client_id], dtype=np.int64
+                ).reshape(-1)
+                supplied = supplied[: self.history_len]
+                hist = np.full(self.history_len, -1, dtype=np.int64)
+                hist[: supplied.shape[0]] = supplied
             else:
                 items = self._user_to_items.get(user_id, np.array([], dtype=np.int64))
-                hist = items[-self.history_len :]
-                if hist.shape[0] < self.history_len:
-                    hist = np.pad(hist, (0, self.history_len - hist.shape[0]), constant_values=0)
+                hist = self._pad_history(items)
 
             # Neighbor user ids per history position
             if self._provided_neighbor_user_ids is not None and client_id in self._provided_neighbor_user_ids:
@@ -242,7 +296,7 @@ class FedPerGNN(BaseFederatedServer):
                 neigh_ids = np.full((self.history_len, self.neighbor_len), -1, dtype=np.int64)
                 for ell in range(self.history_len):
                     item_id = int(hist[ell])
-                    if item_id == 0:
+                    if item_id < 0:
                         continue
                     cand_users = self._item_to_users.get(item_id)
                     if cand_users is None or cand_users.size == 0:
@@ -284,7 +338,7 @@ class FedPerGNN(BaseFederatedServer):
 
         Writes into:
           self.extra_payload["expanded_user_data"][client_id] = {
-              "history_item_ids": (L,),
+              "history_item_ids": (L,) with -1 in empty slots,
               "neighbor_embeddings": (L,N,H),
           }
         """
@@ -307,7 +361,7 @@ class FedPerGNN(BaseFederatedServer):
             if cache is None:
                 raise KeyError(f"Missing expansion cache for client_id={client_id}. Did _before_training run?")
 
-            hist = cache["history_item_ids"]  # (L,)
+            hist = cache["history_item_ids"]  # (L,) with -1 in empty slots
             neigh_ids = cache["neighbor_user_ids"]  # (L,N) with -1 padding
 
             if not use_neighbors:
