@@ -2,7 +2,7 @@
 
 A PyTorch library for **simulating federated recommendation (FedRec) methods** under one data pipeline, one training loop and one evaluation protocol.
 
-> **Status: pre-alpha.** APIs will change. See `docs/issues/` for known problems.
+> **Status: pre-alpha.** APIs will change.
 
 ## Why
 
@@ -15,16 +15,25 @@ FedRec papers ship code in different frameworks, with different splits, client p
 - **Aggregators:** FedAvg, SimpleAvg, Median, TrimmedMean, FedAtt, Krum / Multi-Krum, Bulyan. Row-layout groups (`ParamIO.layout="rows"`) apply the same aggregator per embedding row.
 - **Evaluation:** full-ranking top-K metrics (HR, NDCG, Precision, Recall, …) computed per client.
 - **Methods:** FedNCF, FedVAE, FedMF, GPFedRec, FedPerGNN, FedFast, EFVAE, MetaMF, SemiDFEGL.
-- 
+
 ## Install
 
+FedRecLab is not on PyPI. Install it from GitHub. Python 3.10 or newer. The command installs the library and its pinned dependencies (NumPy, PyTorch, pandas, tqdm, Cornac). PyTorch is a large download.
+
 ```bash
-git clone <repo-url> FedRecLab && cd FedRecLab
 python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip install "git+https://github.com/aymenkhs/FedRecLab.git"
 ```
 
-Run code from the repository root (imports use `src.fedreclab`).
+Once that environment is active, `import fedreclab` works from any directory.
+
+To work on this repository, clone it and install the package in editable mode, including pytest:
+
+```bash
+git clone https://github.com/aymenkhs/FedRecLab.git && cd FedRecLab
+python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -e ".[dev]"
+```
 
 ## Quick start: FedNCF on MovieLens-100K
 
@@ -83,13 +92,13 @@ Client algorithms, selectors, aggregators and evaluators are single-use: build n
 
 ## Writing your own method
 
-Subclass `BaseFederatedServer` and `BaseClientAlgorithm`, declare how each parameter group is exchanged with `ParamIO`, and put method-specific logic in the server hooks. See `docs/PROJECT_CONTEXT.md` for the architecture and `AGENT.md` for conventions.
+Subclass `BaseFederatedServer` and `BaseClientAlgorithm`, declare how each parameter group is exchanged with `ParamIO`, and put method-specific logic in the server hooks. See `docs/PROJECT_CONTEXT.md` for the architecture and `AGENTS.md` for conventions.
 
 ## Documentation
 
 - `docs/PROJECT_CONTEXT.md`: architecture, design decisions, roadmap.
 - `docs/issues/`: known issues (core, FedPerGNN, CdFed).
-- `AGENT.md`: conventions for contributors and coding agents.
+- `AGENTS.md`: conventions for contributors and coding agents.
 
 ## Roadmap
 
@@ -122,4 +131,4 @@ Subclass `BaseFederatedServer` and `BaseClientAlgorithm`, declare how each param
 
 ## Licence
 
-TBD.
+Apache License 2.0. See [LICENSE](LICENSE).
